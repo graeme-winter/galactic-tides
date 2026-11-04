@@ -19,6 +19,7 @@ add_library(galactic_tides
   src/gravity.cpp
   src/integrator.cpp
   src/snapshot_io.cpp
+  src/hernquist_ics.cpp
 )
 target_include_directories(galactic_tides PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(galactic_tides PRIVATE
