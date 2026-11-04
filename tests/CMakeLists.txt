@@ -1,0 +1,7 @@
+function(galactic_tides_add_test name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} PRIVATE galactic_tides)
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+galactic_tides_add_test(test_params)

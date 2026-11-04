@@ -1,0 +1,4 @@
+build*/
+*.hdf5
+*.png
+__pycache__/
