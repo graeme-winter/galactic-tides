@@ -1,0 +1,33 @@
+# A single Milky-Way-like galaxy after Hernquist (1993).
+# Units: G = 1, disk mass = 1, disk scale length = 1.
+# For the Milky Way (h = 3.5 kpc, M_disk = 5.6e10 Msun):
+#   length 3.5 kpc, velocity 262 km/s, time 13.1 Myr, mass 5.6e10 Msun.
+
+mode = galaxy
+output = galaxy_ics.hdf5
+report = galaxy_ics_report.txt
+seed = 12345
+
+# Softening and opening angle used to measure the realised potential;
+# keep these the same as in the run.
+eps = 0.05
+theta = 0.6
+
+disk_n = 20000
+disk_mass = 1.0
+disk_h = 1.0
+disk_z0 = 0.2
+disk_rmax = 10.0
+disk_Q = 1.5
+disk_Q_radius = 2.43   # solar radius in disk scale lengths
+
+bulge_n = 5000
+bulge_mass = 0.3333333
+bulge_a = 0.2
+bulge_rmax = 4.0
+
+halo_n = 60000
+halo_mass = 5.8
+halo_core = 1.0
+halo_cutoff = 10.0
+halo_rmax = 30.0

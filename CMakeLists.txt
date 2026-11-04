@@ -39,6 +39,12 @@ if(GALACTIC_TIDES_USE_OPENMP)
   endif()
 endif()
 
+add_executable(galactic-tides-ics apps/galactic_tides_ics.cpp)
+target_link_libraries(galactic-tides-ics PRIVATE galactic_tides)
+add_executable(galactic-tides-run apps/galactic_tides_run.cpp)
+target_link_libraries(galactic-tides-run PRIVATE galactic_tides)
+install(TARGETS galactic-tides-ics galactic-tides-run RUNTIME DESTINATION bin)
+
 if(GALACTIC_TIDES_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)

@@ -1,0 +1,12 @@
+ics = encounter_ics.hdf5
+output_dir = encounter
+snapshot_prefix = snap
+
+eps = 0.05
+theta = 0.6
+quadrupole = true
+
+dt = 0.01
+t_end = 150.0
+snapshot_interval = 1.0
+log_interval = 50

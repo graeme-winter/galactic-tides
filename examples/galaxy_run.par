@@ -1,0 +1,13 @@
+ics = galaxy_ics.hdf5
+output_dir = galaxy
+snapshot_prefix = snap
+
+eps = 0.05
+theta = 0.6
+quadrupole = true
+leaf_size = 8
+
+dt = 0.01             # ~130 kyr for the Milky Way scaling
+t_end = 100.0         # ~1.3 Gyr
+snapshot_interval = 1.0
+log_interval = 50

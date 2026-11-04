@@ -1,0 +1,37 @@
+# Two identical Hernquist (1993) galaxies on a parabolic orbit, in the
+# spirit of Toomre & Toomre (1972) and Barnes & Hernquist (1992).
+
+mode = encounter
+output = encounter_ics.hdf5
+report = encounter_ics_report.txt
+seed = 2026
+
+eps = 0.05
+theta = 0.6
+
+encounter_rp = 3.0      # pericentre, disk scale lengths
+encounter_r0 = 25.0     # starting separation (the halos already overlap here;
+                        # the orbit is the point-mass one, as in Toomre & Toomre)
+g1_incl = 0.0           # galaxy 1 prograde, in the orbital plane
+g1_omega = 0.0
+g2_incl = 71.0          # galaxy 2 inclined
+g2_omega = 30.0
+
+disk_n = 20000
+disk_mass = 1.0
+disk_h = 1.0
+disk_z0 = 0.2
+disk_rmax = 10.0
+disk_Q = 1.5
+disk_Q_radius = 2.43
+
+bulge_n = 5000
+bulge_mass = 0.3333333
+bulge_a = 0.2
+bulge_rmax = 4.0
+
+halo_n = 60000
+halo_mass = 5.8
+halo_core = 1.0
+halo_cutoff = 10.0
+halo_rmax = 30.0
