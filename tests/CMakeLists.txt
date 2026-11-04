@@ -6,3 +6,4 @@ endfunction()
 
 galactic_tides_add_test(test_params)
 galactic_tides_add_test(test_octree)
+galactic_tides_add_test(test_integrator)
