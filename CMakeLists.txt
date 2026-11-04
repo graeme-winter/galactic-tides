@@ -18,10 +18,16 @@ add_library(galactic_tides
   src/octree.cpp
   src/gravity.cpp
   src/integrator.cpp
+  src/snapshot_io.cpp
 )
 target_include_directories(galactic_tides PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(galactic_tides PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>)
+
+find_package(HDF5 REQUIRED COMPONENTS C)
+target_include_directories(galactic_tides PUBLIC ${HDF5_INCLUDE_DIRS})
+target_link_libraries(galactic_tides PUBLIC ${HDF5_C_LIBRARIES})
+target_compile_definitions(galactic_tides PUBLIC ${HDF5_C_DEFINITIONS})
 
 if(GALACTIC_TIDES_USE_OPENMP)
   find_package(OpenMP)
