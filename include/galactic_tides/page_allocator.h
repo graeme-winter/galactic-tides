@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <new>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -42,6 +43,18 @@ struct PageAlignedAllocator {
     return static_cast<T *>(p);
   }
   void deallocate(T *p, std::size_t) noexcept { std::free(p); }
+
+  // resize() default-initialises rather than zero-fills: these arrays are
+  // always written in full before they are read, and zeroing tens of MB
+  // every step costs time.
+  template <class U>
+  void construct(U *p) noexcept {
+    ::new (static_cast<void *>(p)) U;
+  }
+  template <class U, class... Args>
+  void construct(U *p, Args &&...args) {
+    ::new (static_cast<void *>(p)) U(std::forward<Args>(args)...);
+  }
 
   template <class U>
   bool operator==(const PageAlignedAllocator<U> &) const noexcept { return true; }

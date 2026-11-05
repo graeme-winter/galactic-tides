@@ -24,6 +24,16 @@
 
 namespace galactic_tides {
 
+// The fields of a tree node that the group walk reads, packed together.
+struct GroupWalkNode {
+  Vec3 center;
+  double half;
+  Vec3 com;
+  double crit;  // opening distance l / theta + delta
+  std::int32_t first_child, n_children;
+  std::uint32_t begin, end;
+};
+
 struct GroupLists {
   Vec3 origin;                         // bodies and cells are relative to this
   // Page-aligned so the GPU can use them in place.
@@ -37,6 +47,11 @@ struct GroupLists {
                                        // one SIMD group walks it serially
   std::uint64_t cell_interactions = 0;  // summed over targets
   std::uint64_t body_interactions = 0;
+
+  // Working storage kept between builds so that steps after the first
+  // allocate (almost) nothing.
+  std::vector<GroupWalkNode> scratch_nodes;
+  std::vector<std::vector<kern::uint>> scratch_cells, scratch_bodies;
 };
 
 // Cells with at most this many bodies are listed as bodies when accepted.
