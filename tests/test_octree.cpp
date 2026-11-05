@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <cstdint>
 #include <set>
 #include <vector>
 
@@ -128,6 +129,52 @@ int main() {
     }
   }
 
+  // Parallel build: the same tree as the serial build (nodes in another
+  // order), so the same depth, node count and forces, bit for bit.
+  {
+    auto structure_ok = [](const Octree &t) {
+      int bad = 0;
+      const auto &nodes = t.nodes();
+      for (const auto &nd : nodes) {
+        if (nd.is_leaf()) continue;
+        std::uint32_t at = nd.begin;
+        double m = 0;
+        for (int c = 0; c < nd.n_children; ++c) {
+          const auto &ch = nodes[nd.first_child + c];
+          bad += ch.begin != at || ch.end <= ch.begin;
+          bad += std::fabs(ch.half - 0.5 * nd.half) > 1e-12 * nd.half;
+          at = ch.end;
+          m += ch.mass;
+        }
+        bad += at != nd.end;
+        bad += std::fabs(m - nd.mass) > 1e-12 * nd.mass;
+      }
+      return bad;
+    };
+    for (int leaf : {1, 8}) {
+      Particles a = direct, b = direct;
+      gp.theta = 0.6;
+      Octree serial, parallel;
+      serial.set_parallel_threshold(1u << 30);
+      parallel.set_parallel_threshold(1);
+      compute_gravity_tree(a, gp, serial, leaf);
+      compute_gravity_tree(b, gp, parallel, leaf);
+      CHECK(serial.nodes().size() == parallel.nodes().size());
+      CHECK(serial.depth() == parallel.depth());
+      CHECK(serial.order() == parallel.order());
+      CHECK(structure_ok(serial) == 0);
+      CHECK(structure_ok(parallel) == 0);
+      int differ = 0;
+      for (std::size_t i = 0; i < n; ++i)
+        differ += a.acc[i].x != b.acc[i].x || a.acc[i].y != b.acc[i].y ||
+                  a.acc[i].z != b.acc[i].z || a.pot[i] != b.pot[i];
+      CHECK(differ == 0);
+      CHECK(serial.nodes()[0].mass == parallel.nodes()[0].mass);
+      for (int k = 0; k < 6; ++k)
+        CHECK(serial.nodes()[0].quad[k] == parallel.nodes()[0].quad[k]);
+    }
+  }
+
   // Degenerate inputs: coincident particles and empty sets must not hang.
   {
     Particles p;
@@ -138,6 +185,15 @@ int main() {
     CHECK(std::isfinite(p.acc[0].x) && std::isfinite(p.acc[100].x));
     Particles empty;
     compute_gravity_tree(empty, gp, tree);
+    // And through the parallel path.
+    Octree par;
+    par.set_parallel_threshold(1);
+    compute_gravity_tree(p, gp, par);
+    CHECK(std::isfinite(p.acc[0].x) && std::isfinite(p.acc[100].x));
+    Particles one;
+    one.push_back(Vec3(1, 1, 1), Vec3(), 1.0, 0, ParticleType::Halo);
+    compute_gravity_tree(one, gp, par);
+    CHECK(one.acc[0].x == 0.0);
   }
 
   return TEST_MAIN_RESULT();

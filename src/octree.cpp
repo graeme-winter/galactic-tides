@@ -5,6 +5,11 @@
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
+#include <utility>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace galactic_tides {
 
@@ -17,136 +22,70 @@ inline int octant(const Vec3 &p, const Vec3 &c) {
 }
 }  // namespace
 
-void Octree::build(const std::vector<Vec3> &pos, const std::vector<double> &mass,
-                   int leaf_size) {
-  if (pos.size() != mass.size()) throw std::invalid_argument("Octree::build: size mismatch");
-  if (pos.size() > std::numeric_limits<std::uint32_t>::max())
-    throw std::invalid_argument("Octree::build: too many particles");
-  leaf_size_ = std::max(1, leaf_size);
-  depth_ = 0;
-  nodes_.clear();
-  const std::size_t n = pos.size();
-  index_.resize(n);
-  std::iota(index_.begin(), index_.end(), std::size_t{0});
-  scratch_.resize(n);
-  pos_.resize(n);
-  mass_.resize(n);
-  if (n == 0) return;
+namespace {
 
-  Vec3 lo = pos[0], hi = pos[0];
-  for (const auto &p : pos) {
-    for (int k = 0; k < 3; ++k) {
-      lo[k] = std::min(lo[k], p[k]);
-      hi[k] = std::max(hi[k], p[k]);
-    }
-  }
-  double half = 0.0;
-  for (int k = 0; k < 3; ++k) half = std::max(half, 0.5 * (hi[k] - lo[k]));
-  half = half * (1.0 + 1e-9) + 1e-300;
+using Node = Octree::Node;
 
-  nodes_.reserve(2 * n / static_cast<std::size_t>(leaf_size_) + 16);
-  nodes_.emplace_back();
-  nodes_[0].center = 0.5 * (lo + hi);
-  nodes_[0].half = half;
-  nodes_[0].begin = 0;
-  nodes_[0].end = static_cast<std::uint32_t>(n);
-  build_into(0, pos, mass, 0);
+// Everything the build needs besides the node array it writes into. index
+// and scratch are shared by concurrent subtree builds, which touch disjoint
+// ranges of them.
+struct BuildContext {
+  const std::vector<Vec3> &pos;
+  const std::vector<double> &mass;
+  std::vector<std::size_t> &index;
+  std::vector<std::size_t> &scratch;
+  std::uint32_t leaf_size;
+};
 
-  for (std::size_t k = 0; k < n; ++k) {
-    pos_[k] = pos[index_[k]];
-    mass_[k] = mass[index_[k]];
-  }
-  scratch_.clear();
-  scratch_.shrink_to_fit();
+bool stays_leaf(const Node &nd, std::uint32_t leaf_size, int depth) {
+  const Vec3 &c = nd.center;
+  return nd.end - nd.begin <= leaf_size || depth >= kMaxDepth ||
+         nd.half < 1e-12 * (std::fabs(c.x) + std::fabs(c.y) + std::fabs(c.z) + 1e-300);
 }
 
-void Octree::build_into(std::size_t ni, const std::vector<Vec3> &pos,
-                        const std::vector<double> &mass, int depth) {
-  depth_ = std::max(depth_, depth);
-  const std::uint32_t begin = nodes_[ni].begin, end = nodes_[ni].end;
-
-  auto set_moments_from_particles = [&](Node &nd) {
-    double m = 0.0;
-    Vec3 com;
-    for (std::uint32_t k = nd.begin; k < nd.end; ++k) {
-      const std::size_t i = index_[k];
-      m += mass[i];
-      com += mass[i] * pos[i];
-    }
-    com = m > 0 ? com / m : nd.center;
-    double q[6] = {0, 0, 0, 0, 0, 0};
-    for (std::uint32_t k = nd.begin; k < nd.end; ++k) {
-      const std::size_t i = index_[k];
-      const Vec3 d = pos[i] - com;
-      const double r2 = norm2(d);
-      q[0] += mass[i] * (3 * d.x * d.x - r2);
-      q[1] += mass[i] * (3 * d.y * d.y - r2);
-      q[2] += mass[i] * (3 * d.z * d.z - r2);
-      q[3] += mass[i] * 3 * d.x * d.y;
-      q[4] += mass[i] * 3 * d.x * d.z;
-      q[5] += mass[i] * 3 * d.y * d.z;
-    }
-    nd.mass = m;
-    nd.com = com;
-    std::copy(q, q + 6, nd.quad);
-    nd.delta = norm(com - nd.center);
-  };
-
-  const Vec3 center = nodes_[ni].center;
-  const double half = nodes_[ni].half;
-  if (end - begin <= static_cast<std::uint32_t>(leaf_size_) || depth >= kMaxDepth ||
-      half < 1e-12 * (std::fabs(center.x) + std::fabs(center.y) + std::fabs(center.z) + 1e-300)) {
-    set_moments_from_particles(nodes_[ni]);
-    return;
-  }
-
-  // Counting sort of [begin, end) into octants.
-  std::array<std::uint32_t, 8> count{};
-  for (std::uint32_t k = begin; k < end; ++k) ++count[octant(pos[index_[k]], center)];
-  std::array<std::uint32_t, 9> offset{};
-  offset[0] = begin;
-  for (int o = 0; o < 8; ++o) offset[o + 1] = offset[o] + count[o];
-  std::array<std::uint32_t, 8> fill{};
-  for (int o = 0; o < 8; ++o) fill[o] = offset[o];
-  for (std::uint32_t k = begin; k < end; ++k) {
-    const std::size_t i = index_[k];
-    scratch_[fill[octant(pos[i], center)]++] = i;
-  }
-  std::copy(scratch_.begin() + begin, scratch_.begin() + end, index_.begin() + begin);
-
-  int nonempty = 0;
-  for (int o = 0; o < 8; ++o) nonempty += count[o] > 0;
-  const std::size_t first = nodes_.size();
-  nodes_.resize(first + nonempty);  // invalidates references into nodes_
-  nodes_[ni].first_child = static_cast<std::int32_t>(first);
-  nodes_[ni].n_children = nonempty;
-
-  const double h2 = 0.5 * half;
-  std::size_t c = first;
-  for (int o = 0; o < 8; ++o) {
-    if (!count[o]) continue;
-    Node &ch = nodes_[c];
-    ch.half = h2;
-    ch.center = Vec3(center.x + ((o & 1) ? h2 : -h2), center.y + ((o & 2) ? h2 : -h2),
-                     center.z + ((o & 4) ? h2 : -h2));
-    ch.begin = offset[o];
-    ch.end = offset[o + 1];
-    ++c;
-  }
-  for (std::size_t k = first; k < first + nonempty; ++k) build_into(k, pos, mass, depth + 1);
-
-  // Combine children: monopole, then quadrupole via the parallel axis theorem.
-  Node &nd = nodes_[ni];
+void leaf_moments(const BuildContext &ctx, Node &nd) {
   double m = 0.0;
   Vec3 com;
-  for (std::size_t k = first; k < first + nonempty; ++k) {
-    m += nodes_[k].mass;
-    com += nodes_[k].mass * nodes_[k].com;
+  for (std::uint32_t k = nd.begin; k < nd.end; ++k) {
+    const std::size_t i = ctx.index[k];
+    m += ctx.mass[i];
+    com += ctx.mass[i] * ctx.pos[i];
   }
   com = m > 0 ? com / m : nd.center;
   double q[6] = {0, 0, 0, 0, 0, 0};
-  for (std::size_t k = first; k < first + nonempty; ++k) {
-    const Node &ch = nodes_[k];
+  for (std::uint32_t k = nd.begin; k < nd.end; ++k) {
+    const std::size_t i = ctx.index[k];
+    const double mi = ctx.mass[i];
+    const Vec3 d = ctx.pos[i] - com;
+    const double r2 = norm2(d);
+    q[0] += mi * (3 * d.x * d.x - r2);
+    q[1] += mi * (3 * d.y * d.y - r2);
+    q[2] += mi * (3 * d.z * d.z - r2);
+    q[3] += mi * 3 * d.x * d.y;
+    q[4] += mi * 3 * d.x * d.z;
+    q[5] += mi * 3 * d.y * d.z;
+  }
+  nd.mass = m;
+  nd.com = com;
+  std::copy(q, q + 6, nd.quad);
+  nd.delta = norm(com - nd.center);
+}
+
+// Monopole and quadrupole of node ni from its children (parallel axis theorem).
+void combine_children(std::vector<Node> &nodes, std::size_t ni) {
+  Node &nd = nodes[ni];
+  const std::size_t first = static_cast<std::size_t>(nd.first_child);
+  const std::size_t last = first + static_cast<std::size_t>(nd.n_children);
+  double m = 0.0;
+  Vec3 com;
+  for (std::size_t k = first; k < last; ++k) {
+    m += nodes[k].mass;
+    com += nodes[k].mass * nodes[k].com;
+  }
+  com = m > 0 ? com / m : nd.center;
+  double q[6] = {0, 0, 0, 0, 0, 0};
+  for (std::size_t k = first; k < last; ++k) {
+    const Node &ch = nodes[k];
     const Vec3 d = ch.com - com;
     const double r2 = norm2(d);
     q[0] += ch.quad[0] + ch.mass * (3 * d.x * d.x - r2);
@@ -160,6 +99,177 @@ void Octree::build_into(std::size_t ni, const std::vector<Vec3> &pos,
   nd.com = com;
   std::copy(q, q + 6, nd.quad);
   nd.delta = norm(com - nd.center);
+}
+
+// Counting sort of node ni's bodies into octants, appending its (non-empty)
+// children to nodes. Moments are not set.
+void split(const BuildContext &ctx, std::vector<Node> &nodes, std::size_t ni) {
+  const std::uint32_t begin = nodes[ni].begin, end = nodes[ni].end;
+  const Vec3 center = nodes[ni].center;
+  const double half = nodes[ni].half;
+  std::array<std::uint32_t, 8> count{};
+  for (std::uint32_t k = begin; k < end; ++k) ++count[octant(ctx.pos[ctx.index[k]], center)];
+  std::array<std::uint32_t, 9> offset{};
+  offset[0] = begin;
+  for (int o = 0; o < 8; ++o) offset[o + 1] = offset[o] + count[o];
+  std::array<std::uint32_t, 8> fill{};
+  for (int o = 0; o < 8; ++o) fill[o] = offset[o];
+  for (std::uint32_t k = begin; k < end; ++k) {
+    const std::size_t i = ctx.index[k];
+    ctx.scratch[fill[octant(ctx.pos[i], center)]++] = i;
+  }
+  std::copy(ctx.scratch.begin() + begin, ctx.scratch.begin() + end, ctx.index.begin() + begin);
+
+  int nonempty = 0;
+  for (int o = 0; o < 8; ++o) nonempty += count[o] > 0;
+  const std::size_t first = nodes.size();
+  nodes.resize(first + nonempty);  // invalidates references into nodes
+  nodes[ni].first_child = static_cast<std::int32_t>(first);
+  nodes[ni].n_children = nonempty;
+  const double h2 = 0.5 * half;
+  std::size_t c = first;
+  for (int o = 0; o < 8; ++o) {
+    if (!count[o]) continue;
+    Node &ch = nodes[c++];
+    ch.half = h2;
+    ch.center = Vec3(center.x + ((o & 1) ? h2 : -h2), center.y + ((o & 2) ? h2 : -h2),
+                     center.z + ((o & 4) ? h2 : -h2));
+    ch.begin = offset[o];
+    ch.end = offset[o + 1];
+  }
+}
+
+// Builds the subtree under node ni (whose geometry and range are set);
+// returns the deepest level reached.
+int build_subtree(const BuildContext &ctx, std::vector<Node> &nodes, std::size_t ni, int depth) {
+  if (stays_leaf(nodes[ni], ctx.leaf_size, depth)) {
+    leaf_moments(ctx, nodes[ni]);
+    return depth;
+  }
+  split(ctx, nodes, ni);
+  const std::size_t first = static_cast<std::size_t>(nodes[ni].first_child);
+  const int nch = nodes[ni].n_children;
+  int deepest = depth;
+  for (int c = 0; c < nch; ++c)
+    deepest = std::max(deepest, build_subtree(ctx, nodes, first + c, depth + 1));
+  combine_children(nodes, ni);
+  return deepest;
+}
+
+int max_threads() {
+#ifdef _OPENMP
+  return omp_get_max_threads();
+#else
+  return 1;
+#endif
+}
+
+}  // namespace
+
+void Octree::build(const std::vector<Vec3> &pos, const std::vector<double> &mass,
+                   int leaf_size) {
+  if (pos.size() != mass.size()) throw std::invalid_argument("Octree::build: size mismatch");
+  if (pos.size() > std::numeric_limits<std::uint32_t>::max())
+    throw std::invalid_argument("Octree::build: too many particles");
+  leaf_size_ = std::max(1, leaf_size);
+  depth_ = 0;
+  nodes_.clear();
+  const std::size_t n = pos.size();
+  index_.resize(n);
+  scratch_.resize(n);
+  pos_.resize(n);
+  mass_.resize(n);
+  if (n == 0) return;
+
+  double lx = pos[0].x, ly = pos[0].y, lz = pos[0].z, hx = lx, hy = ly, hz = lz;
+#pragma omp parallel for schedule(static) reduction(min : lx, ly, lz) reduction(max : hx, hy, hz)
+  for (long k = 0; k < static_cast<long>(n); ++k) {
+    index_[k] = static_cast<std::size_t>(k);
+    lx = std::min(lx, pos[k].x);
+    ly = std::min(ly, pos[k].y);
+    lz = std::min(lz, pos[k].z);
+    hx = std::max(hx, pos[k].x);
+    hy = std::max(hy, pos[k].y);
+    hz = std::max(hz, pos[k].z);
+  }
+  const Vec3 lo(lx, ly, lz), hi(hx, hy, hz);
+  double half = 0.0;
+  for (int k = 0; k < 3; ++k) half = std::max(half, 0.5 * (hi[k] - lo[k]));
+  half = half * (1.0 + 1e-9) + 1e-300;
+
+  nodes_.reserve(2 * n / static_cast<std::size_t>(leaf_size_) + 16);
+  nodes_.emplace_back();
+  nodes_[0].center = 0.5 * (lo + hi);
+  nodes_[0].half = half;
+  nodes_[0].begin = 0;
+  nodes_[0].end = static_cast<std::uint32_t>(n);
+  const BuildContext ctx{pos, mass, index_, scratch_, static_cast<std::uint32_t>(leaf_size_)};
+
+  if (n < parallel_threshold_) {
+    depth_ = build_subtree(ctx, nodes_, 0, 0);
+  } else {
+    // Split the top levels serially until there are enough subtrees to share
+    // out, build those in parallel into their own arrays, then splice them in.
+    const std::size_t target = 8 * static_cast<std::size_t>(max_threads());
+    std::vector<std::size_t> top;  // split serially, in breadth-first order
+    std::vector<std::pair<std::size_t, int>> level{{0, 0}}, next;
+    for (int d = 0; d < 4 && !level.empty() && level.size() < target; ++d) {
+      next.clear();
+      for (const auto &[ni, depth] : level) {
+        if (stays_leaf(nodes_[ni], ctx.leaf_size, depth)) {
+          leaf_moments(ctx, nodes_[ni]);
+          depth_ = std::max(depth_, depth);
+          continue;
+        }
+        split(ctx, nodes_, ni);
+        top.push_back(ni);
+        for (int c = 0; c < nodes_[ni].n_children; ++c)
+          next.emplace_back(static_cast<std::size_t>(nodes_[ni].first_child + c), depth + 1);
+      }
+      level.swap(next);
+    }
+
+    std::vector<std::vector<Node>> subs(level.size());
+    std::vector<int> deepest(level.size(), 0);
+#pragma omp parallel for schedule(dynamic, 1)
+    for (long k = 0; k < static_cast<long>(level.size()); ++k) {
+      std::vector<Node> &sub = subs[k];
+      const Node &root = nodes_[level[k].first];
+      sub.reserve(2 * (root.end - root.begin) / ctx.leaf_size + 16);
+      sub.push_back(root);
+      deepest[k] = build_subtree(ctx, sub, 0, level[k].second);
+    }
+
+    // sub[0] replaces its frontier node; sub[1..] are appended, children
+    // indices shifted to match.
+    std::vector<std::size_t> base(level.size());
+    std::size_t total = nodes_.size();
+    for (std::size_t k = 0; k < level.size(); ++k) {
+      base[k] = total;
+      total += subs[k].size() - 1;
+      depth_ = std::max(depth_, deepest[k]);
+    }
+    nodes_.resize(total);
+#pragma omp parallel for schedule(dynamic, 1)
+    for (long k = 0; k < static_cast<long>(level.size()); ++k) {
+      const std::vector<Node> &sub = subs[k];
+      auto place = [&](const Node &src) {
+        Node nd = src;
+        if (nd.first_child >= 0)
+          nd.first_child = static_cast<std::int32_t>(base[k] + nd.first_child - 1);
+        return nd;
+      };
+      nodes_[level[k].first] = place(sub[0]);
+      for (std::size_t i = 1; i < sub.size(); ++i) nodes_[base[k] + i - 1] = place(sub[i]);
+    }
+    for (auto it = top.rbegin(); it != top.rend(); ++it) combine_children(nodes_, *it);
+  }
+
+#pragma omp parallel for schedule(static)
+  for (long k = 0; k < static_cast<long>(n); ++k) {
+    pos_[k] = pos[index_[k]];
+    mass_[k] = mass[index_[k]];
+  }
 }
 
 void Octree::accel_pot(const Vec3 &x, std::size_t self, const GravityParams &gp, Vec3 &acc,

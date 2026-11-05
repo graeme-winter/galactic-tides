@@ -83,9 +83,12 @@ class Octree {
   std::size_t size() const { return index_.size(); }
   int depth() const { return depth_; }
 
+  // Trees for at least this many particles (default 20000) are built in
+  // parallel: the top levels serially, then subtrees concurrently. The
+  // result is the same tree, with nodes in a different order.
+  void set_parallel_threshold(std::size_t n) { parallel_threshold_ = n; }
+
  private:
-  void build_into(std::size_t ni, const std::vector<Vec3> &pos, const std::vector<double> &mass,
-                  int depth);
 
   std::vector<Node> nodes_;
   std::vector<std::size_t> index_;
@@ -94,6 +97,7 @@ class Octree {
   std::vector<double> mass_;
   int leaf_size_ = 8;
   int depth_ = 0;
+  std::size_t parallel_threshold_ = 20000;
 };
 
 template <class F>
