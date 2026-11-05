@@ -3,7 +3,10 @@
 //   galactic-tides-bench [n=100000] [theta=0.6] [eps=0.05] [quadrupole=1] [repeat=3]
 //                   [sample=1000] [group_size=32] [group_pack=default]
 //                   [backends=tree-cpu,group-cpu,group-metal,direct-metal]
-//                   [gpu_trace=bench.gputrace]
+//                   [simds=4] [gpu_trace=bench.gputrace]
+//
+// simds: groups per threadgroup for the Metal tree's SIMD kernel; 0 selects
+// the threadgroup-tiled kernel instead.
 //
 // gpu_trace records one extra group-metal force evaluation into a .gputrace
 // document for Xcode's GPU performance counters; run with
@@ -65,6 +68,7 @@ int main(int argc, char **argv) {
     // -1: the device's default (packed on Metal, not on the CPU)
     const int pack = params.has("group_pack") ? (params.get_bool("group_pack", true) ? 1 : 0) : -1;
     const std::string gpu_trace = params.get_string("gpu_trace", "");
+    const long simds = params.get_int("simds", 4);
     std::string def = "tree-cpu,group-cpu";
     if (metal::compiled_in()) def += ",group-metal,direct-metal";
     const auto backends = split(params.get_string("backends", def));
@@ -124,6 +128,7 @@ int main(int argc, char **argv) {
           auto g = std::make_unique<GroupTreeGravity>(
               gp, name == "group-cpu" ? Device::CPU : Device::Metal, group_size, 8, pack);
           group = g.get();
+          if (name == "group-metal") g->set_metal_simds(static_cast<unsigned>(simds));
           model_ptr = std::move(g);
         } else if (name == "direct-cpu") model_ptr = std::make_unique<DirectGravity>(gp, Device::CPU);
         else if (name == "direct-metal")
@@ -159,7 +164,8 @@ int main(int argc, char **argv) {
         std::printf("   tree %.1f, lists %.1f, evaluate %.1f", tm.tree * 1e3, tm.lists * 1e3,
                     tm.evaluate * 1e3);
         if (name == "group-metal") {
-          std::printf(" (gpu %.1f%s)", tm.gpu * 1e3, tm.zero_copy ? ", zero-copy" : ", copied");
+          std::printf(" (gpu %.1f, %s kernel%s)", tm.gpu * 1e3, tm.kernel,
+                      tm.zero_copy ? ", zero-copy" : ", copied");
           const auto &L = group->lists();
           std::printf("\n%-14s groups %zu, threads/threadgroup %d, mean fill %.1f, cells %.0f + "
                       "bodies %.0f per target, %.2e interactions/s on the GPU",

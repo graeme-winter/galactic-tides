@@ -23,4 +23,9 @@ enum class mem_flags { mem_none, mem_device, mem_threadgroup };
 // Provided by the harness: all threads of the current threadgroup wait here.
 void threadgroup_barrier(mem_flags flags);
 
+// Provided by the harness: the value `lane` of this SIMD group passed in.
+// Every lane of the SIMD group must make the same calls.
+float4 simd_shuffle(float4 value, unsigned short lane);
+unsigned int simd_shuffle(unsigned int value, unsigned short lane);
+
 }  // namespace metal

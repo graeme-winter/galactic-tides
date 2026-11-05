@@ -50,6 +50,14 @@ class Context {
             const gpu_vector<kern::GTGroup> &groups, const kern::GTParams &p,
             unsigned threads_per_group, gpu_vector<kern::float4> &out);
 
+  // Tree kernel choice: with simds > 0 (default 4), groups of at most 32 run
+  // as one group per SIMD group, `simds` groups per threadgroup
+  // (gt_tree_simd); otherwise, or for bigger groups, one group per
+  // threadgroup with threadgroup-memory tiles (gt_tree).
+  void set_tree_simds(unsigned simds);
+  // "simd" or "tiled": the tree kernel the last tree() call used.
+  const char *last_tree_kernel() const;
+
   // Time the GPU spent on the last dispatch, from the command buffer.
   double last_gpu_seconds() const;
   // Whether the last dispatch used the arrays in place (no copies).

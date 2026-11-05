@@ -68,6 +68,13 @@ class Barrier {
   bool violation_ = false;
 };
 Barrier g_barrier;
+
+// SIMD groups: each has its own barrier and exchange slots, and each thread
+// knows which SIMD group and lane it is.
+constexpr unsigned kMaxSimds = 32, kSimdWidth = 32;
+Barrier g_simd_barrier[kMaxSimds];
+thread_local unsigned tl_simd = 0, tl_lane = 0;
+bool g_simd_violation = false;
 }  // namespace
 
 // Metal address spaces and kernel qualifiers, mapped onto C++. threadgroup
@@ -88,6 +95,19 @@ Barrier g_barrier;
 
 namespace metal {
 void threadgroup_barrier(mem_flags) { g_barrier.wait(); }
+
+template <class T>
+T shuffle(T value, unsigned short lane) {
+  static T slots[kMaxSimds][kSimdWidth];
+  if (lane >= kSimdWidth) g_simd_violation = true;
+  slots[tl_simd][tl_lane] = value;
+  g_simd_barrier[tl_simd].wait();  // every lane has published
+  const T result = slots[tl_simd][lane % kSimdWidth];
+  g_simd_barrier[tl_simd].wait();  // every lane has read before slots are reused
+  return result;
+}
+float4 simd_shuffle(float4 value, unsigned short lane) { return shuffle(value, lane); }
+unsigned int simd_shuffle(unsigned int value, unsigned short lane) { return shuffle(value, lane); }
 }  // namespace metal
 
 namespace mock {
@@ -132,6 +152,35 @@ void run_tree(const void *bodies, const void *cells, const void *cell_list, cons
   }
 }
 
-bool barrier_violation() { return g_barrier.violation(); }
+void run_tree_simd(const void *bodies, const void *cells, const void *cell_list,
+                   const void *body_list, const void *groups, const void *params,
+                   unsigned simds_per_threadgroup, void *out) {
+  ::GTParams p = *static_cast<const ::GTParams *>(params);
+  const unsigned simds = simds_per_threadgroup;
+  const unsigned threadgroups = (p.n_groups + simds - 1) / simds;
+  for (unsigned gid = 0; gid < threadgroups; ++gid) {
+    for (unsigned s = 0; s < simds; ++s) g_simd_barrier[s].reset(kSimdWidth);
+    std::vector<std::thread> threads;
+    for (unsigned s = 0; s < simds; ++s)
+      for (unsigned lane = 0; lane < kSimdWidth; ++lane)
+        threads.emplace_back([&, s, lane] {
+          tl_simd = s;
+          tl_lane = lane;
+          gt_tree_simd(static_cast<const metal::float4 *>(bodies),
+                       static_cast<const ::GTCell *>(cells), static_cast<const unsigned *>(cell_list),
+                       static_cast<const unsigned *>(body_list),
+                       static_cast<const ::GTGroup *>(groups), static_cast<metal::float4 *>(out), p,
+                       gid, s, simds, lane);
+          g_simd_barrier[s].exit_thread();
+        });
+    for (auto &t : threads) t.join();
+  }
+}
+
+bool barrier_violation() {
+  bool v = g_barrier.violation() || g_simd_violation;
+  for (const auto &b : g_simd_barrier) v = v || b.violation();
+  return v;
+}
 
 }  // namespace mock

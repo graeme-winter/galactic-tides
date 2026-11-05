@@ -75,6 +75,9 @@ struct Context::Impl {
   id<MTLCommandQueue> queue = nil;
   id<MTLComputePipelineState> direct = nil;
   id<MTLComputePipelineState> tree = nil;
+  id<MTLComputePipelineState> tree_simd = nil;
+  unsigned simds = 4;
+  const char *tree_kernel = "";
   Binding bodies, cells, cell_list, body_list, groups, out;
   bool allow_no_copy = true;  // switched off if Metal ever refuses to wrap
   double gpu_seconds = 0.0;
@@ -174,6 +177,7 @@ Context::Context() : impl_(new Impl) {
         };
         m.direct = pipeline("gt_direct");
         if (error.empty()) m.tree = pipeline("gt_tree");
+        if (error.empty()) m.tree_simd = pipeline("gt_tree_simd");
       }
     }
   }
@@ -190,6 +194,8 @@ std::string Context::device_name() const {
   return name;
 }
 
+void Context::set_tree_simds(unsigned simds) { impl_->simds = simds; }
+const char *Context::last_tree_kernel() const { return impl_->tree_kernel; }
 double Context::last_gpu_seconds() const { return impl_->gpu_seconds; }
 bool Context::last_zero_copy() const { return impl_->zero_copy; }
 
@@ -242,8 +248,12 @@ void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern
   @autoreleasepool {
     try {
       Impl &m = *impl_;
+      const bool use_simd =
+          m.simds > 0 && threads_per_group <= GT_SIMD_WIDTH &&
+          [m.tree_simd threadExecutionWidth] == GT_SIMD_WIDTH &&
+          m.simds * GT_SIMD_WIDTH <= [m.tree_simd maxTotalThreadsPerThreadgroup];
       const NSUInteger limit = std::min<NSUInteger>(GT_TREE_TILE, [m.tree maxTotalThreadsPerThreadgroup]);
-      if (threads_per_group == 0 || threads_per_group > limit) {
+      if (!use_simd && (threads_per_group == 0 || threads_per_group > limit)) {
         error = "Metal tree: " + std::to_string(threads_per_group) +
                 " threads per group, but at most " + std::to_string((unsigned long)limit) +
                 " are possible here; use a smaller group_size";
@@ -258,7 +268,7 @@ void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern
                       m.body_list.no_copy && m.groups.no_copy && m.out.no_copy;
         id<MTLCommandBuffer> cb = [m.queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-        [enc setComputePipelineState:m.tree];
+        [enc setComputePipelineState:(use_simd ? m.tree_simd : m.tree)];
         [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
         [enc setBuffer:m.cells.buf offset:0 atIndex:1];
         [enc setBuffer:m.cell_list.buf offset:0 atIndex:2];
@@ -266,9 +276,16 @@ void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern
         [enc setBuffer:m.groups.buf offset:0 atIndex:4];
         [enc setBuffer:m.out.buf offset:0 atIndex:5];
         [enc setBytes:&p length:sizeof(p) atIndex:6];
-        [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
+        if (use_simd) {
+          const NSUInteger threadgroups = (groups.size() + m.simds - 1) / m.simds;
+          [enc dispatchThreadgroups:MTLSizeMake(threadgroups, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(m.simds * GT_SIMD_WIDTH, 1, 1)];
+        } else {
+          [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
+        }
         [enc endEncoding];
+        m.tree_kernel = use_simd ? "simd" : "tiled";
         error = m.finish(cb, "tree kernel");
         if (error.empty()) m.collect_output(m.out, out);
       }

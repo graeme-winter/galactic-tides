@@ -48,6 +48,9 @@ GT_BEGIN_NAMESPACE
 // Groups must not be larger.
 #define GT_TREE_TILE 128u
 
+// SIMD group width the gt_tree_simd kernel is written for (Apple GPUs).
+#define GT_SIMD_WIDTH 32u
+
 // Run parameters, passed by value (setBytes on the Metal side).
 struct GTParams {
   uint n;           // number of bodies

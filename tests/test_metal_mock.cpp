@@ -96,6 +96,37 @@ int main() {
       }
     }
   }
+  // ---- tree kernel, one group per SIMD group, simd_shuffle ---------------------
+  // A smaller system: every emulated shuffle is a pair of barrier waits.
+  {
+    const std::size_t n2 = 307;
+    Particles small(ref);
+    small.resize(n2);
+    for (bool pack : {false, true}) {
+      GravityParams g2 = gp;
+      g2.theta = 0.7;
+      Octree tree;
+      tree.build(small.pos, small.mass, 4);
+      GroupLists L;
+      build_group_lists(tree, g2, static_cast<int>(GT_SIMD_WIDTH), L, pack);
+      kern::GTParams tp = make_kernel_params(g2, n2);
+      tp.n_groups = static_cast<kern::uint>(L.groups.size());
+      gpu_vector<kern::float4> cpu, gpu(n2);
+      evaluate_group_lists_cpu(L, tp, cpu);
+      // 1 and 4 SIMD groups per threadgroup; 3 leaves the last threadgroup
+      // with SIMD groups that have no group and must leave cleanly.
+      for (unsigned simds : {1u, 3u, 4u}) {
+        std::fill(gpu.begin(), gpu.end(), kern::float4{NAN, NAN, NAN, NAN});
+        mock::run_tree_simd(L.bodies.data(), L.cells.data(), L.cell_list.data(),
+                            L.body_list.data(), L.groups.data(), &tp, simds, gpu.data());
+        const double d = max_rel(gpu, cpu);
+        std::cout << "gt_tree_simd, " << L.groups.size() << " groups" << (pack ? " packed" : "")
+                  << ", " << simds << " per threadgroup: max relative difference " << d << "\n";
+        CHECK(d == 0.0);
+      }
+    }
+  }
+
   // Every thread of every threadgroup reached every barrier.
   CHECK(!mock::barrier_violation());
   return TEST_MAIN_RESULT();

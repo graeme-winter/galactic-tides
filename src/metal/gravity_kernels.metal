@@ -113,3 +113,73 @@ kernel void gt_tree(device const float4 *bodies [[buffer(0)]],
 
   if (active) out[i] = float4(a.ax, a.ay, a.az, a.pot);
 }
+
+// Tree, one group per SIMD group: several groups share a threadgroup (one per
+// SIMD group), so a GPU core keeps many more of them in flight than with one
+// single-SIMD threadgroup per group. Lanes share list entries with
+// simd_shuffle: each lane fetches one entry into registers, then every lane
+// evaluates all of them, taking each in turn from the lane that fetched it.
+// No threadgroup memory and no barriers. Groups must have at most
+// GT_SIMD_WIDTH targets and the pipeline's SIMD width must be GT_SIMD_WIDTH;
+// every lane of a SIMD group runs every loop iteration (lanes past the
+// group's targets still fetch), as simd_shuffle requires.
+kernel void gt_tree_simd(device const float4 *bodies [[buffer(0)]],
+                         device const GTCell *cells [[buffer(1)]],
+                         device const uint *cell_list [[buffer(2)]],
+                         device const uint *body_list [[buffer(3)]],
+                         device const GTGroup *groups [[buffer(4)]],
+                         device float4 *out [[buffer(5)]],
+                         constant GTParams &params [[buffer(6)]],
+                         uint gid [[threadgroup_position_in_grid]],
+                         uint simd [[simdgroup_index_in_threadgroup]],
+                         uint simds [[simdgroups_per_threadgroup]],
+                         uint lane [[thread_index_in_simdgroup]]) {
+  GTParams p = params;
+  uint group = gid * simds + simd;
+  if (group >= p.n_groups) return;  // the whole SIMD group leaves together
+  GTGroup g = groups[group];
+  uint i = g.begin + lane;
+  bool active = i < g.end;
+  float4 bi = float4(0.0f);
+  if (active) bi = bodies[i];
+  GTAcc a = {0.0f, 0.0f, 0.0f, 0.0f};
+
+  for (uint base = g.cell_begin; base < g.cell_end; base += GT_SIMD_WIDTH) {
+    uint k = base + lane;
+    float4 cm = float4(0.0f);
+    float4 q0 = float4(0.0f);
+    float4 q1 = float4(0.0f);
+    if (k < g.cell_end) {
+      GTCell c = cells[cell_list[k]];
+      cm = c.com_mass;
+      q0 = c.q0;
+      q1 = c.q1;
+    }
+    uint count = min(GT_SIMD_WIDTH, g.cell_end - base);
+    for (uint t = 0; t < count; ++t) {
+      GTCell c;
+      c.com_mass = simd_shuffle(cm, t);
+      c.q0 = simd_shuffle(q0, t);
+      c.q1 = simd_shuffle(q1, t);
+      a = gt_cell(a, bi.x, bi.y, bi.z, c, p.G, p.eps2, p.quadrupole);
+    }
+  }
+
+  for (uint base = g.body_begin; base < g.body_end; base += GT_SIMD_WIDTH) {
+    uint k = base + lane;
+    float4 b = float4(0.0f);
+    uint j = 0xffffffffu;
+    if (k < g.body_end) {
+      j = body_list[k];
+      b = bodies[j];
+    }
+    uint count = min(GT_SIMD_WIDTH, g.body_end - base);
+    for (uint t = 0; t < count; ++t) {
+      float4 bj = simd_shuffle(b, t);
+      uint jt = simd_shuffle(j, t);
+      if (jt != i) a = gt_body(a, bi.x, bi.y, bi.z, bj, p.G, p.eps2);
+    }
+  }
+
+  if (active) out[i] = float4(a.ax, a.ay, a.az, a.pot);
+}

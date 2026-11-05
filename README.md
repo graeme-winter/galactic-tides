@@ -65,11 +65,15 @@ lanes are mostly busy.
 
 The tree and the lists are built on the CPU in double precision, then
 positions relative to the root cell are evaluated in single precision, which
-is ample for collisionless forces. On the GPU each group's threads stage
-its cells and bodies through threadgroup memory a tile at a time, so the
-indirect loads happen in parallel rather than one after another. (Bodies are
-listed individually rather than as leaf ranges for this reason: with ~3
-bodies per leaf, walking ranges was the kernel's bottleneck.) The lists live in
+is ample for collisionless forces. There are two GPU tree kernels. The default (`metal_simds = 4`) runs each
+group on one SIMD group and puts several groups in a threadgroup; the lanes
+fetch list entries in parallel and pass them round with `simd_shuffle`, with
+no threadgroup memory and no barriers. The other (`metal_simds = 0`, and any
+group bigger than 32) runs one group per threadgroup, staging entries
+through threadgroup memory. Measurements on an M4 Max showed the second
+kernel's time barely depended on the amount of work but did depend on the
+number of groups, so it is limited by how many groups each GPU core keeps in
+flight rather than by arithmetic or memory traffic. The lists live in
 page-aligned host arrays that Metal wraps in place (unified memory), so
 nothing is copied between the CPU and the GPU.
 
@@ -78,7 +82,7 @@ checks them against double precision direct summation on a sample. For the
 GPU tree it also reports the time on the GPU itself (from the command
 buffer), whether the arrays were used in place, the group fill and the GPU's
 interaction rate. `quadrupole=0` and `group_size=` help tell arithmetic
-limits from occupancy, and
+limits from occupancy, `simds=` chooses the tree kernel, and
 
 ```sh
 MTL_CAPTURE_ENABLED=1 ./galactic-tides-bench backends=group-metal repeat=1 gpu_trace=tree.gputrace
@@ -106,7 +110,9 @@ of Metal and C++, so the CPU runs exactly what the GPU runs. On any platform:
   against a mock `metal_stdlib`, and runs it with one CPU thread per GPU
   thread, real barriers and shared threadgroup memory. Its results must be
   bit-identical to the CPU path, and a thread that leaves a kernel while
-  others still have barriers to reach is reported. Removing a barrier,
+  others still have barriers to reach is reported. `simd_shuffle` is
+  emulated with per-SIMD-group barriers, so the SIMD kernel is checked the
+  same way, including that every lane takes part in every shuffle. Removing a barrier,
   shifting an index or letting idle threads exit early all make it fail.
 
 On a Mac, `test_metal` then runs the real kernels on the GPU against the CPU.
