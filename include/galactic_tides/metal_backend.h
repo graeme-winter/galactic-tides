@@ -46,7 +46,7 @@ class Context {
   // be at least the largest group.
   // threads_per_group may be at most GT_TREE_TILE.
   void tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern::GTCell> &cells,
-            const gpu_vector<kern::uint> &cell_list, const gpu_vector<kern::GTRange> &leaf_list,
+            const gpu_vector<kern::uint> &cell_list, const gpu_vector<kern::uint> &body_list,
             const gpu_vector<kern::GTGroup> &groups, const kern::GTParams &p,
             unsigned threads_per_group, gpu_vector<kern::float4> &out);
 

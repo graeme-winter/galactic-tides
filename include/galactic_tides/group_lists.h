@@ -11,8 +11,9 @@
 // box: a cell is accepted only if its centre of mass is further than
 // l/theta + delta from the nearest point of the box and the cell does not
 // overlap the box, so every target in the group is at least as well served
-// as by its own walk. Accepted cells with very few bodies are listed as
-// bodies instead (exact, and cheaper than a quadrupole).
+// as by its own walk. Opened leaves, and accepted cells with very few bodies
+// (exact, and cheaper than a quadrupole), contribute their bodies; bodies
+// are listed one by one so the GPU can load them in parallel.
 
 #include <cstdint>
 #include <vector>
@@ -29,7 +30,7 @@ struct GroupLists {
   gpu_vector<kern::float4> bodies;     // tree order
   gpu_vector<kern::GTCell> cells;      // one per tree node
   gpu_vector<kern::uint> cell_list;    // node indices
-  gpu_vector<kern::GTRange> leaf_list;
+  gpu_vector<kern::uint> body_list;    // body indices (tree order)
   gpu_vector<kern::GTGroup> groups;    // contiguous, in tree order
   int max_group = 0;                   // largest group (threads per threadgroup)
   std::uint64_t cell_interactions = 0;  // summed over targets

@@ -44,7 +44,8 @@ GT_END_NAMESPACE
 GT_BEGIN_NAMESPACE
 
 // Most threads per threadgroup the tree kernel accepts: the size of its
-// threadgroup cell tile (3 x 16 bytes per entry). Groups must not be larger.
+// threadgroup tiles (3 x 16 bytes for cells, 16 + 4 for bodies, per entry).
+// Groups must not be larger.
 #define GT_TREE_TILE 128u
 
 // Run parameters, passed by value (setBytes on the Metal side).
@@ -90,22 +91,16 @@ struct GTCell {
   float4 q1;
 };
 
-// A run of consecutive bodies (a tree leaf), in tree order.
-struct GTRange {
-  uint begin;
-  uint end;
-};
-
 // A group of targets that share one interaction list: bodies [begin, end)
-// in tree order, cells cell_list[cell_begin, cell_end) and body ranges
-// leaf_list[leaf_begin, leaf_end).
+// in tree order, cells cell_list[cell_begin, cell_end) and bodies
+// body_list[body_begin, body_end) (indices into the bodies array).
 struct GTGroup {
   uint begin;
   uint end;
   uint cell_begin;
   uint cell_end;
-  uint leaf_begin;
-  uint leaf_end;
+  uint body_begin;
+  uint body_end;
   uint pad0;
   uint pad1;
 };
@@ -150,17 +145,15 @@ inline GTAcc gt_group_cells(GTAcc a, float4 bi, GTGroup g, GT_DEVICE const GTCel
   return a;
 }
 
-// The body part: every body of every leaf on the list, skipping target i.
+// The body part: every body on the list, skipping target i.
 inline GTAcc gt_group_bodies(GTAcc a, uint i, float4 bi, GTGroup g,
-                             GT_DEVICE const float4 *bodies, GT_DEVICE const GTRange *leaf_list,
+                             GT_DEVICE const float4 *bodies, GT_DEVICE const uint *body_list,
                              GTParams p) {
-  for (uint k = g.leaf_begin; k < g.leaf_end; ++k) {
-    GTRange r = leaf_list[k];
-    for (uint j = r.begin; j < r.end; ++j) {
-      if (j == i) continue;
-      float4 bj = bodies[j];
-      a = gt_body(a, bi.x, bi.y, bi.z, bj, p.G, p.eps2);
-    }
+  for (uint k = g.body_begin; k < g.body_end; ++k) {
+    uint j = body_list[k];
+    if (j == i) continue;
+    float4 bj = bodies[j];
+    a = gt_body(a, bi.x, bi.y, bi.z, bj, p.G, p.eps2);
   }
   return a;
 }
@@ -169,11 +162,11 @@ inline GTAcc gt_group_bodies(GTAcc a, uint i, float4 bi, GTGroup g,
 // the same in the same order, staging cells through threadgroup memory.
 inline GTAcc gt_group_accel(uint i, GTGroup g, GT_DEVICE const float4 *bodies,
                             GT_DEVICE const GTCell *cells, GT_DEVICE const uint *cell_list,
-                            GT_DEVICE const GTRange *leaf_list, GTParams p) {
+                            GT_DEVICE const uint *body_list, GTParams p) {
   float4 bi = bodies[i];
   GTAcc a = {0.0f, 0.0f, 0.0f, 0.0f};
   a = gt_group_cells(a, bi, g, cells, cell_list, p);
-  a = gt_group_bodies(a, i, bi, g, bodies, leaf_list, p);
+  a = gt_group_bodies(a, i, bi, g, bodies, body_list, p);
   return a;
 }
 

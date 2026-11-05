@@ -14,7 +14,10 @@ struct GroupSpec {
 
 struct GroupWork {
   std::vector<kern::uint> cells;
-  std::vector<kern::GTRange> leaves;
+  std::vector<kern::uint> bodies;
+  void add_bodies(std::uint32_t begin, std::uint32_t end) {
+    for (std::uint32_t j = begin; j < end; ++j) bodies.push_back(j);
+  }
 };
 
 }  // namespace
@@ -31,7 +34,7 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
 
   out.groups.clear();
   out.cell_list.clear();
-  out.leaf_list.clear();
+  out.body_list.clear();
   out.max_group = 0;
   out.cell_interactions = out.body_interactions = 0;
   out.bodies.resize(n);
@@ -99,6 +102,8 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
       }
     const Vec3 gc = 0.5 * (lo + hi), gh = 0.5 * (hi - lo);
     GroupWork &w = work[g];
+    w.cells.clear();
+    w.bodies.clear();
     std::size_t stack[1024];
     int sp = 0;
     stack[sp++] = 0;
@@ -115,11 +120,11 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
       const double crit = 2.0 * nd.half * inv_theta + nd.delta;
       if (!overlap && d2 > crit * crit) {
         if (nd.end - nd.begin <= kSmallCellAsBodies)
-          w.leaves.push_back({nd.begin, nd.end});
+          w.add_bodies(nd.begin, nd.end);
         else
           w.cells.push_back(static_cast<kern::uint>(ni));
       } else if (nd.is_leaf()) {
-        w.leaves.push_back({nd.begin, nd.end});
+        w.add_bodies(nd.begin, nd.end);
       } else {
         for (int c = 0; c < nd.n_children; ++c) stack[sp++] = nd.first_child + c;
       }
@@ -127,15 +132,15 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
   }
 
   // Concatenate into flat arrays.
-  std::size_t ncell = 0, nleaf = 0;
+  std::size_t ncell = 0, nbody = 0;
   for (const auto &w : work) {
     ncell += w.cells.size();
-    nleaf += w.leaves.size();
+    nbody += w.bodies.size();
   }
-  if (ncell > 0xffffffffu || nleaf > 0xffffffffu)
+  if (ncell > 0xffffffffu || nbody > 0xffffffffu)
     throw std::runtime_error("interaction lists too long for 32 bit offsets");
   out.cell_list.reserve(ncell);
-  out.leaf_list.reserve(nleaf);
+  out.body_list.reserve(nbody);
   out.groups.resize(specs.size());
   for (std::size_t g = 0; g < specs.size(); ++g) {
     kern::GTGroup &grp = out.groups[g];
@@ -145,15 +150,13 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
     grp.cell_begin = static_cast<kern::uint>(out.cell_list.size());
     out.cell_list.insert(out.cell_list.end(), work[g].cells.begin(), work[g].cells.end());
     grp.cell_end = static_cast<kern::uint>(out.cell_list.size());
-    grp.leaf_begin = static_cast<kern::uint>(out.leaf_list.size());
-    out.leaf_list.insert(out.leaf_list.end(), work[g].leaves.begin(), work[g].leaves.end());
-    grp.leaf_end = static_cast<kern::uint>(out.leaf_list.size());
+    grp.body_begin = static_cast<kern::uint>(out.body_list.size());
+    out.body_list.insert(out.body_list.end(), work[g].bodies.begin(), work[g].bodies.end());
+    grp.body_end = static_cast<kern::uint>(out.body_list.size());
 
     const std::uint64_t targets = grp.end - grp.begin;
-    std::uint64_t bodies = 0;
-    for (const auto &r : work[g].leaves) bodies += r.end - r.begin;
     out.cell_interactions += targets * work[g].cells.size();
-    out.body_interactions += targets * bodies - targets;  // each target skips itself
+    out.body_interactions += targets * work[g].bodies.size() - targets;  // each skips itself
     out.max_group = std::max<int>(out.max_group, static_cast<int>(targets));
   }
 }

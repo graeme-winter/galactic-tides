@@ -77,7 +77,7 @@ void evaluate_group_lists_cpu(const GroupLists &lists, const kern::GTParams &p,
     for (kern::uint i = grp.begin; i < grp.end; ++i) {
       const kern::GTAcc a =
           kern::gt_group_accel(i, grp, lists.bodies.data(), lists.cells.data(),
-                               lists.cell_list.data(), lists.leaf_list.data(), p);
+                               lists.cell_list.data(), lists.body_list.data(), p);
       out[i] = kern::float4{a.ax, a.ay, a.az, a.pot};
     }
   }
@@ -119,7 +119,7 @@ void GroupTreeGravity::compute(Particles &p) {
   kern::GTParams kp = make_kernel_params(gp_, lists_.bodies.size());
   kp.n_groups = static_cast<kern::uint>(lists_.groups.size());
   if (device_ == Device::Metal)
-    ctx_->tree(lists_.bodies, lists_.cells, lists_.cell_list, lists_.leaf_list, lists_.groups, kp,
+    ctx_->tree(lists_.bodies, lists_.cells, lists_.cell_list, lists_.body_list, lists_.groups, kp,
                static_cast<unsigned>(std::max(lists_.max_group, 1)), out_);
   else
     evaluate_group_lists_cpu(lists_, kp, out_);

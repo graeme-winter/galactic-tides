@@ -21,7 +21,6 @@ namespace metal {
 static_assert(sizeof(kern::float4) == 16, "float4 must match Metal's 16 byte float4");
 static_assert(sizeof(kern::GTParams) == 32, "GTParams layout");
 static_assert(sizeof(kern::GTCell) == 48, "GTCell layout");
-static_assert(sizeof(kern::GTRange) == 8, "GTRange layout");
 static_assert(sizeof(kern::GTGroup) == 32, "GTGroup layout");
 
 bool compiled_in() { return true; }
@@ -76,7 +75,7 @@ struct Context::Impl {
   id<MTLCommandQueue> queue = nil;
   id<MTLComputePipelineState> direct = nil;
   id<MTLComputePipelineState> tree = nil;
-  Binding bodies, cells, cell_list, leaf_list, groups, out;
+  Binding bodies, cells, cell_list, body_list, groups, out;
   bool allow_no_copy = true;  // switched off if Metal ever refuses to wrap
   double gpu_seconds = 0.0;
   bool zero_copy = false;
@@ -230,7 +229,7 @@ void Context::direct(const gpu_vector<kern::float4> &bodies, const kern::GTParam
 
 void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern::GTCell> &cells,
                    const gpu_vector<kern::uint> &cell_list,
-                   const gpu_vector<kern::GTRange> &leaf_list,
+                   const gpu_vector<kern::uint> &body_list,
                    const gpu_vector<kern::GTGroup> &groups, const kern::GTParams &p,
                    unsigned threads_per_group, gpu_vector<kern::float4> &out) {
   const size_t n = bodies.size();
@@ -252,18 +251,18 @@ void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern
         m.bind_input(m.bodies, bodies);
         m.bind_input(m.cells, cells);
         m.bind_input(m.cell_list, cell_list);
-        m.bind_input(m.leaf_list, leaf_list);
+        m.bind_input(m.body_list, body_list);
         m.bind_input(m.groups, groups);
         m.bind_output(m.out, out);
         m.zero_copy = m.bodies.no_copy && m.cells.no_copy && m.cell_list.no_copy &&
-                      m.leaf_list.no_copy && m.groups.no_copy && m.out.no_copy;
+                      m.body_list.no_copy && m.groups.no_copy && m.out.no_copy;
         id<MTLCommandBuffer> cb = [m.queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
         [enc setComputePipelineState:m.tree];
         [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
         [enc setBuffer:m.cells.buf offset:0 atIndex:1];
         [enc setBuffer:m.cell_list.buf offset:0 atIndex:2];
-        [enc setBuffer:m.leaf_list.buf offset:0 atIndex:3];
+        [enc setBuffer:m.body_list.buf offset:0 atIndex:3];
         [enc setBuffer:m.groups.buf offset:0 atIndex:4];
         [enc setBuffer:m.out.buf offset:0 atIndex:5];
         [enc setBytes:&p length:sizeof(p) atIndex:6];

@@ -126,8 +126,7 @@ int check_lists(const Octree &tree, const GroupLists &L, std::size_t n, int grou
       if (nd.begin < g.end && g.begin < nd.end) ++bad;  // cell contains a target
       for (auto j = nd.begin; j < nd.end; ++j) ++cover[j];
     }
-    for (auto k = g.leaf_begin; k < g.leaf_end; ++k)
-      for (auto j = L.leaf_list[k].begin; j < L.leaf_list[k].end; ++j) ++cover[j];
+    for (auto k = g.body_begin; k < g.body_end; ++k) ++cover[L.body_list[k]];
     for (std::size_t j = 0; j < n; ++j) bad += cover[j] != 1;
   }
   return bad;
@@ -148,7 +147,6 @@ int main() {
   static_assert(sizeof(kern::GTParams) == 32, "GTParams");
   static_assert(sizeof(kern::GTAcc) == 16, "GTAcc");
   static_assert(sizeof(kern::GTCell) == 48 && alignof(kern::GTCell) == 16, "GTCell");
-  static_assert(sizeof(kern::GTRange) == 8, "GTRange");
   static_assert(sizeof(kern::GTGroup) == 32, "GTGroup");
 
   // ---- the lint itself catches what it should ---------------------------------
@@ -263,7 +261,7 @@ int main() {
     GroupLists L;
     build_group_lists(tree, gp, 32, L, true);
     CHECK(aligned(L.bodies.data()) && aligned(L.cells.data()) && aligned(L.cell_list.data()) &&
-          aligned(L.leaf_list.data()) && aligned(L.groups.data()));
+          aligned(L.body_list.data()) && aligned(L.groups.data()));
     // Rebuilding with the same particles keeps the storage, so the GPU's
     // wrappers can be reused from step to step.
     const void *before = L.cell_list.data();

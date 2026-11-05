@@ -93,7 +93,7 @@ void threadgroup_barrier(mem_flags) { g_barrier.wait(); }
 namespace mock {
 
 static_assert(sizeof(::GTParams) == 32 && sizeof(::GTCell) == 48 && sizeof(::GTGroup) == 32 &&
-                  sizeof(::GTRange) == 8 && sizeof(metal::float4) == 16,
+                  sizeof(metal::float4) == 16,
               "mock Metal layouts");
 
 void run_direct(const void *bodies, const void *params, unsigned threads_per_group, void *out) {
@@ -114,7 +114,7 @@ void run_direct(const void *bodies, const void *params, unsigned threads_per_gro
   }
 }
 
-void run_tree(const void *bodies, const void *cells, const void *cell_list, const void *leaf_list,
+void run_tree(const void *bodies, const void *cells, const void *cell_list, const void *body_list,
               const void *groups, const void *params, unsigned threads_per_group, void *out) {
   ::GTParams p = *static_cast<const ::GTParams *>(params);
   for (unsigned gid = 0; gid < p.n_groups; ++gid) {
@@ -123,7 +123,7 @@ void run_tree(const void *bodies, const void *cells, const void *cell_list, cons
     for (unsigned lid = 0; lid < threads_per_group; ++lid)
       threads.emplace_back([&, lid] {
         gt_tree(static_cast<const metal::float4 *>(bodies), static_cast<const ::GTCell *>(cells),
-                static_cast<const unsigned *>(cell_list), static_cast<const ::GTRange *>(leaf_list),
+                static_cast<const unsigned *>(cell_list), static_cast<const unsigned *>(body_list),
                 static_cast<const ::GTGroup *>(groups), static_cast<metal::float4 *>(out), p, gid,
                 lid, threads_per_group);
         g_barrier.exit_thread();

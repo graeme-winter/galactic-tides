@@ -66,8 +66,10 @@ lanes are mostly busy.
 The tree and the lists are built on the CPU in double precision, then
 positions relative to the root cell are evaluated in single precision, which
 is ample for collisionless forces. On the GPU each group's threads stage
-its cells through threadgroup memory a tile at a time, so the indirect cell
-loads happen in parallel rather than one after another. The lists live in
+its cells and bodies through threadgroup memory a tile at a time, so the
+indirect loads happen in parallel rather than one after another. (Bodies are
+listed individually rather than as leaf ranges for this reason: with ~3
+bodies per leaf, walking ranges was the kernel's bottleneck.) The lists live in
 page-aligned host arrays that Metal wraps in place (unified memory), so
 nothing is copied between the CPU and the GPU.
 

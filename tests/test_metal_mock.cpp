@@ -87,7 +87,7 @@ int main() {
       for (unsigned threads : {static_cast<unsigned>(L.max_group),
                                static_cast<unsigned>(L.max_group) + 3, GT_TREE_TILE}) {
         std::fill(gpu.begin(), gpu.end(), kern::float4{NAN, NAN, NAN, NAN});
-        mock::run_tree(L.bodies.data(), L.cells.data(), L.cell_list.data(), L.leaf_list.data(),
+        mock::run_tree(L.bodies.data(), L.cells.data(), L.cell_list.data(), L.body_list.data(),
                        L.groups.data(), &tp, threads, gpu.data());
         const double d = max_rel(gpu, cpu);
         std::cout << "gt_tree, groups of " << gs << (pack ? " packed" : "") << ", " << threads
