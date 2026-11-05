@@ -1,8 +1,10 @@
 # galactic-tides
 
-A small, readable Barnes–Hut tree code for collisionless galaxy simulations,
-with Hernquist (1993) disk/bulge/halo initial conditions. Written for fun and
-for poking at, and structured so that SPH and collision handling can be added
+A small, readable Barnes–Hut tree code for collisionless galaxy simulations:
+Hernquist (1993) disk/bulge/halo initial conditions, single galaxies or
+encounters between two, a grouped tree walk that runs on Apple GPUs through
+Metal, and a WebGL viewer for watching the results. Written for fun and for
+poking at, and structured so that SPH and collision handling can be added
 later without rearranging the furniture.
 
 ## Building
@@ -13,7 +15,7 @@ if found.
 ```sh
 cmake -S . -B build
 cmake --build build -j
-ctest --test-dir build        # tree accuracy, integrator, I/O, ICs
+ctest --test-dir build        # tree, integrator, I/O, ICs, GPU kernels
 ```
 
 On macOS with Homebrew Clang/libomp you may need
@@ -59,9 +61,15 @@ On an Apple M4 Max with a 200,000 particle galaxy (`galactic-tides-bench`):
 
 | solver | θ | ms per force evaluation | 99th percentile force error |
 |--------|---|------------------------:|----------------------------:|
-| `tree` on the CPU | 0.6 | 118 | 9.0 × 10⁻³ |
-| `group` on Metal | 0.75 | 24 | 5.9 × 10⁻³ |
+| `tree` on the CPU | 0.75 | 71 | 1.3 × 10⁻² |
+| `group` on Metal | 0.75 | 16 | 5.9 × 10⁻³ |
 | `direct` on Metal | – | 122 | 1.8 × 10⁻⁵ |
+
+For `group` on Metal the 16 ms is 3.7 ms building the tree and 5.6 ms
+building the interaction lists (both on the CPU, in parallel) and 6.6 ms
+evaluating them on the GPU, so a 200,000 particle galaxy runs at 50–60 steps
+a second. To match its accuracy the CPU tree needs θ ≈ 0.6, at about 118 ms.
+Use `gravity = group`, `device = metal`, `theta = 0.75` on a Mac.
 
 The grouped walk (Barnes 1990) does 10–30× fewer tree walks and gives every
 thread in a GPU SIMD group the same work. Its opening test is the
@@ -165,10 +173,14 @@ Typical accuracy from the test suite (lopsided Hernquist sphere plus
 satellites): median relative force error ~4 × 10⁻⁴ at θ = 0.5 and
 ~3 × 10⁻³ at θ = 1.0 with quadrupoles.
 
+Above 20,000 particles the tree is built in parallel: the top levels are
+split serially, then subtrees are built concurrently and spliced together.
+
 **Integrator** (`integrator.h`). Kick-drift-kick leapfrog with a global
-timestep. Forces come from a `ForceModel`; `TreeGravity` is the only one so
-far. The run log reports energy drift, virial ratio, momentum, L_z and
-interactions per particle.
+timestep. Forces come from a `ForceModel`: `TreeGravity`, `GroupTreeGravity`
+or `DirectGravity` (see above), chosen by the `gravity` and `device`
+parameters. The run log reports energy drift, virial ratio, momentum, L_z
+and interactions per particle.
 
 **Initial conditions** (`hernquist_ics.h`). Hernquist (1993), "N-body
 realizations of compound galaxies", ApJS 86, 389:
@@ -214,16 +226,18 @@ attributes on `/Parameters`.
 ## Layout
 
 ```
-include/galactic_tides/   vec3, particles, params, octree, gravity, integrator,
-                     snapshot_io, hernquist_ics, group_lists, gravity_backends,
-                     metal_backend, kernels/gravity_kernels.h (CPU + Metal)
-src/                 implementations; src/metal: kernels and Metal host code
-apps/                galactic-tides-ics, galactic-tides-run, galactic-tides-bench
-tests/               self-contained tests (ctest)
-scripts/             plot_snapshot.py (image / profiles / frames),
-                     export_viewer.py (pack snapshots for the viewer)
-viewer/              galactic_tides_viewer.html (WebGL playback)
-examples/            parameter files
+include/galactic_tides/  vec3, particles, params, octree, gravity, integrator,
+                         snapshot_io, hernquist_ics, group_lists,
+                         gravity_backends, metal_backend, page_allocator,
+                         kernels/gravity_kernels.h (shared by CPU and Metal)
+src/                     implementations; src/metal: kernels, Metal host code
+apps/                    galactic-tides-ics, galactic-tides-run,
+                         galactic-tides-bench
+tests/                   self-contained tests (ctest), incl. a mock Metal
+scripts/                 plot_snapshot.py (image / profiles / frames),
+                         export_viewer.py (pack snapshots for the viewer)
+viewer/                  galactic_tides_viewer.html (WebGL playback)
+examples/                parameter files
 ```
 
 ## Room to grow
@@ -236,6 +250,10 @@ examples/            parameter files
   particle cloud collisions are a classic cheap ISM model, and merging
   particles into sinks (`ParticleType::Sink`) is another.
 * **Timesteps.** Individual (block) timesteps would help the centre a lot.
+* **More speed.** The CPU now does most of the work of a GPU force
+  evaluation (tree and lists). Sharing walk work between neighbouring
+  groups, overlapping CPU and GPU work, or building the tree and lists on
+  the GPU would each help.
 * **Softening.** Spline softening (Monaghan & Lattanzio) in place of Plummer.
 * **Better ICs.** Distribution-function based models (Kuijken & Dubinski 1995;
   AGAMA) for comparison with the moment-based ones.
