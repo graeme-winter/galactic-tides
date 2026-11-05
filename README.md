@@ -45,6 +45,60 @@ For an encounter between two galaxies on a parabolic orbit:
 python3 ../scripts/plot_snapshot.py frames encounter/snap_*.hdf5 --extent 40 --vmax 0.05
 ```
 
+## Gravity solvers and the GPU
+
+`galactic-tides-run` takes `gravity` and `device` parameters:
+
+| gravity | device | what it is |
+|---------|--------|------------|
+| `tree` (default) | `cpu` | per-particle Barnes–Hut walk, double precision |
+| `group` | `cpu` or `metal` | grouped walk: one walk per group of ≤ `group_size` (32) nearby particles builds an interaction list that every particle in the group evaluates, in single precision |
+| `direct` | `cpu` or `metal` | O(N²); double on the CPU, tiled single precision kernel on the GPU |
+
+The grouped walk (Barnes 1990) does 10–30× fewer tree walks and gives every
+thread in a GPU SIMD group the same work. Its opening test is the
+per-particle one applied to the group's bounding box, so it is never less
+accurate; in practice it is about twice as accurate as `tree` at the same θ
+(more so in the tail), for about 50% more interactions. On the GPU, small neighbouring groups are
+packed together (`group_pack`, on by default for Metal) so that the 32
+lanes are mostly busy.
+
+The tree and the lists are built on the CPU in double precision, then
+positions relative to the root cell are evaluated in single precision, which
+is ample for collisionless forces.
+
+`galactic-tides-bench n=200000` times the solvers on a Hernquist galaxy and
+checks them against double precision direct summation on a sample.
+
+**Building with Metal.** On macOS, Metal is on by default
+(`-DGALACTIC_TIDES_USE_METAL=OFF` to disable). Kernels are compiled at run time
+from source embedded in the library, so only the Metal framework is needed.
+With full Xcode installed, `cmake --build build --target metal_check`
+compiles them offline to surface any syntax errors early.
+
+**How the GPU code is checked.** All of the arithmetic lives in
+`include/galactic_tides/kernels/gravity_kernels.h`, written in the common subset
+of Metal and C++, so the CPU runs exactly what the GPU runs. On any platform:
+
+* `test_gpu_kernels` checks struct layouts against Metal's, lints everything
+  Metal will compile (unsuffixed float literals, `double`, `std::`,
+  references), compares the kernels with double precision, and checks the
+  interaction lists exactly: every body is covered once per group and no
+  accepted cell contains one of the group's own targets.
+* `test_metal_mock` compiles `src/metal/gravity_kernels.metal` itself as C++
+  against a mock `metal_stdlib`, and runs it with one CPU thread per GPU
+  thread, real barriers and shared threadgroup memory. Its results must be
+  bit-identical to the CPU path. Removing a barrier or shifting an index
+  makes it fail.
+
+On a Mac, `test_metal` then runs the real kernels on the GPU against the CPU.
+What only a Mac can check is Metal-specific semantics (address spaces,
+attributes, fast-math) and the small Objective-C++ host file.
+
+Limits: 32-bit indices (fine to ~4 × 10⁹ particles), interaction lists held
+in memory (a few hundred MB at 10⁶ particles), and macOS may kill a single
+very long GPU command, so brute force is for N up to ~10⁵.
+
 ## Watching a run in 3D
 
 `viewer/galactic_tides_viewer.html` is a self-contained WebGL page (no build step,
@@ -141,9 +195,10 @@ attributes on `/Parameters`.
 
 ```
 include/galactic_tides/   vec3, particles, params, octree, gravity, integrator,
-                     snapshot_io, hernquist_ics
-src/                 implementations
-apps/                galactic-tides-ics, galactic-tides-run
+                     snapshot_io, hernquist_ics, group_lists, gravity_backends,
+                     metal_backend, kernels/gravity_kernels.h (CPU + Metal)
+src/                 implementations; src/metal: kernels and Metal host code
+apps/                galactic-tides-ics, galactic-tides-run, galactic-tides-bench
 tests/               self-contained tests (ctest)
 scripts/             plot_snapshot.py (image / profiles / frames),
                      export_viewer.py (pack snapshots for the viewer)
@@ -162,16 +217,12 @@ examples/            parameter files
   particles into sinks (`ParticleType::Sink`) is another.
 * **Timesteps.** Individual (block) timesteps would help the centre a lot.
 * **Softening.** Spline softening (Monaghan & Lattanzio) in place of Plummer.
-* **GPU.** On Apple Silicon a Metal compute kernel could take the force
-  calculation: brute-force O(N²) tiles for N up to ~10⁵, or a CPU-built tree
-  with interaction lists walked on the GPU for more. Unified memory means no
-  copying, and single precision forces are fine with cell-relative
-  coordinates.
 * **Better ICs.** Distribution-function based models (Kuijken & Dubinski 1995;
   AGAMA) for comparison with the moment-based ones.
 
 ## References
 
+* Barnes, J. E. 1990, J. Comput. Phys., 87, 161
 * Barnes, J. & Hut, P. 1986, Nature, 324, 446
 * Barnes, J. E. & Hernquist, L. 1992, ARA&A, 30, 705
 * Hernquist, L. 1987, ApJS, 64, 715
