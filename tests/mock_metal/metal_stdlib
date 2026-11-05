@@ -1,0 +1,26 @@
+// A tiny stand-in for Metal's <metal_stdlib>, just enough to compile
+// gravity_kernels.metal as C++ and run its kernels on CPU threads (see
+// metal_mock_kernels.cpp). Not a Metal implementation: it only provides the
+// types and functions the kernels use.
+#pragma once
+
+#include <cmath>
+
+namespace metal {
+
+struct alignas(16) float4 {
+  float x, y, z, w;
+  float4() = default;
+  explicit float4(float s) : x(s), y(s), z(s), w(s) {}
+  float4(float a, float b, float c, float d) : x(a), y(b), z(c), w(d) {}
+};
+
+inline float rsqrt(float v) { return 1.0f / std::sqrt(v); }
+inline unsigned int min(unsigned int a, unsigned int b) { return a < b ? a : b; }
+
+enum class mem_flags { mem_none, mem_device, mem_threadgroup };
+
+// Provided by the harness: all threads of the current threadgroup wait here.
+void threadgroup_barrier(mem_flags flags);
+
+}  // namespace metal
