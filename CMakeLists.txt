@@ -21,6 +21,7 @@ add_library(galactic_tides
   src/snapshot_io.cpp
   src/hernquist_ics.cpp
   src/gravity_backends.cpp
+  src/group_lists.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/generated/kernel_source.cpp
 )
 target_include_directories(galactic_tides PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

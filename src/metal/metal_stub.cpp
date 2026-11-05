@@ -21,6 +21,10 @@ Context::~Context() = default;
 std::string Context::device_name() const { return {}; }
 void Context::direct(const std::vector<kern::float4> &, const kern::GTParams &,
                      std::vector<kern::float4> &) {}
+void Context::tree(const std::vector<kern::float4> &, const std::vector<kern::GTCell> &,
+                   const std::vector<kern::uint> &, const std::vector<kern::GTRange> &,
+                   const std::vector<kern::GTGroup> &, const kern::GTParams &, unsigned,
+                   std::vector<kern::float4> &) {}
 
 }  // namespace metal
 }  // namespace galactic_tides

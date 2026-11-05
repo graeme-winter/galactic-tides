@@ -12,8 +12,10 @@ t_end = 100.0         # ~1.3 Gyr
 snapshot_interval = 1.0
 log_interval = 50
 
-# Force calculation: gravity = tree | direct, device = cpu | metal.
-# tree is the per-particle walk on the CPU; direct is O(N^2) (double on the
-# CPU, single precision on the GPU).
+# Force calculation: gravity = tree | group | direct, device = cpu | metal.
+# tree is the per-particle walk on the CPU; group is the grouped walk whose
+# interaction lists run on either (use it with device = metal for the GPU);
+# direct is O(N^2) (double on the CPU, single precision on the GPU).
 gravity = tree
 device = cpu
+# group_size = 32

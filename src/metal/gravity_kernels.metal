@@ -41,3 +41,25 @@ kernel void gt_direct(device const float4 *bodies [[buffer(0)]],
   }
   if (active) out[i] = float4(a.ax, a.ay, a.az, a.pot);
 }
+
+// Tree: one threadgroup per group, one thread per target in it. Every thread
+// in a threadgroup walks the same interaction list, so list and cell reads
+// are uniform across the SIMD group. Dispatched with threadgroups of
+// max_group threads; groups smaller than that leave threads idle.
+kernel void gt_tree(device const float4 *bodies [[buffer(0)]],
+                    device const GTCell *cells [[buffer(1)]],
+                    device const uint *cell_list [[buffer(2)]],
+                    device const GTRange *leaf_list [[buffer(3)]],
+                    device const GTGroup *groups [[buffer(4)]],
+                    device float4 *out [[buffer(5)]],
+                    constant GTParams &params [[buffer(6)]],
+                    uint gid [[threadgroup_position_in_grid]],
+                    uint lid [[thread_position_in_threadgroup]]) {
+  GTParams p = params;
+  if (gid >= p.n_groups) return;
+  GTGroup g = groups[gid];
+  uint i = g.begin + lid;
+  if (i >= g.end) return;
+  GTAcc a = gt_group_accel(i, g, bodies, cells, cell_list, leaf_list, p);
+  out[i] = float4(a.ax, a.ay, a.az, a.pot);
+}

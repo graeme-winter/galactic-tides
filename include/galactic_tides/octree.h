@@ -77,6 +77,9 @@ class Octree {
   const std::vector<Node> &nodes() const { return nodes_; }
   // tree order -> original index
   const std::vector<std::size_t> &order() const { return index_; }
+  // positions and masses in tree order
+  const std::vector<Vec3> &tree_positions() const { return pos_; }
+  const std::vector<double> &tree_masses() const { return mass_; }
   std::size_t size() const { return index_.size(); }
   int depth() const { return depth_; }
 

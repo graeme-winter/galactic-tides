@@ -18,6 +18,9 @@ namespace metal {
 
 static_assert(sizeof(kern::float4) == 16, "float4 must match Metal's 16 byte float4");
 static_assert(sizeof(kern::GTParams) == 32, "GTParams layout");
+static_assert(sizeof(kern::GTCell) == 48, "GTCell layout");
+static_assert(sizeof(kern::GTRange) == 8, "GTRange layout");
+static_assert(sizeof(kern::GTGroup) == 32, "GTGroup layout");
 
 bool compiled_in() { return true; }
 
@@ -34,7 +37,12 @@ struct Context::Impl {
   id<MTLDevice> device = nil;
   id<MTLCommandQueue> queue = nil;
   id<MTLComputePipelineState> direct = nil;
+  id<MTLComputePipelineState> tree = nil;
   id<MTLBuffer> bodies = nil;
+  id<MTLBuffer> cells = nil;
+  id<MTLBuffer> cell_list = nil;
+  id<MTLBuffer> leaf_list = nil;
+  id<MTLBuffer> groups = nil;
   id<MTLBuffer> out = nil;
 
   // Shared storage: on Apple Silicon the CPU and GPU see the same memory, so
@@ -89,6 +97,7 @@ Context::Context() : impl_(new Impl) {
           return pso;
         };
         m.direct = pipeline("gt_direct");
+        if (error.empty()) m.tree = pipeline("gt_tree");
       }
     }
   }
@@ -98,9 +107,11 @@ Context::Context() : impl_(new Impl) {
 Context::~Context() = default;
 
 std::string Context::device_name() const {
+  std::string name;
   @autoreleasepool {
-    return std::string([[impl_->device name] UTF8String]);
+    name = [[impl_->device name] UTF8String];
   }
+  return name;
 }
 
 void Context::direct(const std::vector<kern::float4> &bodies, const kern::GTParams &p,
@@ -110,6 +121,7 @@ void Context::direct(const std::vector<kern::float4> &bodies, const kern::GTPara
   if (n == 0) return;
   std::string error;
   @autoreleasepool {
+   try {
     Impl &m = *impl_;
     m.upload(m.bodies, bodies.data(), n * sizeof(kern::float4));
     m.ensure(m.out, n * sizeof(kern::float4));
@@ -126,6 +138,58 @@ void Context::direct(const std::vector<kern::float4> &bodies, const kern::GTPara
     [enc endEncoding];
     error = m.finish(cb, "direct kernel");
     if (error.empty()) std::memcpy(out.data(), [m.out contents], n * sizeof(kern::float4));
+   } catch (const std::exception &e) {
+    error = e.what();  // rethrown outside the autorelease pool
+   }
+  }
+  if (!error.empty()) throw std::runtime_error(error);
+}
+
+void Context::tree(const std::vector<kern::float4> &bodies, const std::vector<kern::GTCell> &cells,
+                   const std::vector<kern::uint> &cell_list,
+                   const std::vector<kern::GTRange> &leaf_list,
+                   const std::vector<kern::GTGroup> &groups, const kern::GTParams &p,
+                   unsigned threads_per_group, std::vector<kern::float4> &out) {
+  const size_t n = bodies.size();
+  out.resize(n);
+  if (n == 0 || groups.empty()) return;
+  if (p.n != n || p.n_groups != groups.size())
+    throw std::invalid_argument("Metal tree: parameters do not match the arrays");
+  std::string error;
+  @autoreleasepool {
+   try {
+    Impl &m = *impl_;
+    if (threads_per_group == 0 || threads_per_group > [m.tree maxTotalThreadsPerThreadgroup]) {
+      error = "Metal tree: " + std::to_string(threads_per_group) +
+              " threads per group is more than this GPU allows (" +
+              std::to_string((unsigned long)[m.tree maxTotalThreadsPerThreadgroup]) +
+              "); use a smaller group_size";
+    } else {
+      m.upload(m.bodies, bodies.data(), n * sizeof(kern::float4));
+      m.upload(m.cells, cells.data(), cells.size() * sizeof(kern::GTCell));
+      m.upload(m.cell_list, cell_list.data(), cell_list.size() * sizeof(kern::uint));
+      m.upload(m.leaf_list, leaf_list.data(), leaf_list.size() * sizeof(kern::GTRange));
+      m.upload(m.groups, groups.data(), groups.size() * sizeof(kern::GTGroup));
+      m.ensure(m.out, n * sizeof(kern::float4));
+      id<MTLCommandBuffer> cb = [m.queue commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+      [enc setComputePipelineState:m.tree];
+      [enc setBuffer:m.bodies offset:0 atIndex:0];
+      [enc setBuffer:m.cells offset:0 atIndex:1];
+      [enc setBuffer:m.cell_list offset:0 atIndex:2];
+      [enc setBuffer:m.leaf_list offset:0 atIndex:3];
+      [enc setBuffer:m.groups offset:0 atIndex:4];
+      [enc setBuffer:m.out offset:0 atIndex:5];
+      [enc setBytes:&p length:sizeof(p) atIndex:6];
+      [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
+      [enc endEncoding];
+      error = m.finish(cb, "tree kernel");
+      if (error.empty()) std::memcpy(out.data(), [m.out contents], n * sizeof(kern::float4));
+    }
+   } catch (const std::exception &e) {
+    error = e.what();  // rethrown outside the autorelease pool
+   }
   }
   if (!error.empty()) throw std::runtime_error(error);
 }

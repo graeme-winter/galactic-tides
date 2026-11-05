@@ -6,6 +6,7 @@
 // rejects, so most mistakes show up without a Mac.
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <random>
 #include <regex>
@@ -15,6 +16,7 @@
 #include "check.h"
 #include "galactic_tides/gravity.h"
 #include "galactic_tides/gravity_backends.h"
+#include "galactic_tides/group_lists.h"
 #include "galactic_tides/kernels/gravity_kernels.h"
 #include "galactic_tides/metal_backend.h"
 
@@ -104,6 +106,40 @@ int lint(const std::string &code, const char *what, bool quiet = false) {
   return problems;
 }
 
+// Every body must be covered exactly once by each group's list (cells count
+// all the bodies beneath them), and no accepted cell may contain one of the
+// group's own targets. Returns the number of violations.
+int check_lists(const Octree &tree, const GroupLists &L, std::size_t n, int group_size) {
+  int bad = 0;
+  // Groups tile [0, n) in order, each no bigger than group_size.
+  std::uint32_t next = 0;
+  for (const auto &g : L.groups) {
+    if (g.begin != next || g.end <= g.begin || g.end - g.begin > std::uint32_t(group_size)) ++bad;
+    next = g.end;
+  }
+  if (next != n) ++bad;
+  std::vector<int> cover(n);
+  for (const auto &g : L.groups) {
+    std::fill(cover.begin(), cover.end(), 0);
+    for (auto k = g.cell_begin; k < g.cell_end; ++k) {
+      const auto &nd = tree.nodes()[L.cell_list[k]];
+      if (nd.begin < g.end && g.begin < nd.end) ++bad;  // cell contains a target
+      for (auto j = nd.begin; j < nd.end; ++j) ++cover[j];
+    }
+    for (auto k = g.leaf_begin; k < g.leaf_end; ++k)
+      for (auto j = L.leaf_list[k].begin; j < L.leaf_list[k].end; ++j) ++cover[j];
+    for (std::size_t j = 0; j < n; ++j) bad += cover[j] != 1;
+  }
+  return bad;
+}
+
+std::vector<double> sorted_errors(const Particles &a, const Particles &ref) {
+  std::vector<double> e;
+  for (std::size_t i = 0; i < a.size(); ++i) e.push_back(norm(a.acc[i] - ref.acc[i]) / norm(ref.acc[i]));
+  std::sort(e.begin(), e.end());
+  return e;
+}
+
 }  // namespace
 
 int main() {
@@ -111,6 +147,9 @@ int main() {
   static_assert(sizeof(kern::float4) == 16 && alignof(kern::float4) == 16, "float4");
   static_assert(sizeof(kern::GTParams) == 32, "GTParams");
   static_assert(sizeof(kern::GTAcc) == 16, "GTAcc");
+  static_assert(sizeof(kern::GTCell) == 48 && alignof(kern::GTCell) == 16, "GTCell");
+  static_assert(sizeof(kern::GTRange) == 8, "GTRange");
+  static_assert(sizeof(kern::GTGroup) == 32, "GTGroup");
 
   // ---- the lint itself catches what it should ---------------------------------
   CHECK(lint("float x = 2.5;", "", true) == 1);
@@ -132,7 +171,7 @@ int main() {
   CHECK(guard_def != std::string::npos && metal_include != std::string::npos &&
         guard_def < metal_include);
   CHECK(src.find("#include <metal_stdlib>") < src.find("kernel void"));
-  for (const char *name : {"gt_direct"})
+  for (const char *name : {"gt_direct", "gt_tree"})
     CHECK(src.find(std::string("kernel void ") + name + "(") != std::string::npos);
   CHECK(lint(metal_view(src), "kernel source") == 0);
 
@@ -178,11 +217,94 @@ int main() {
     CHECK(d.stats().particle_interactions == n * (n - 1));
   }
 
+  // ---- grouped tree: list bookkeeping ----------------------------------------
+  for (bool pack : {false, true})
+  for (int gs : {1, 7, 32, 64}) {
+    Octree tree;
+    tree.build(ref.pos, ref.mass, 8);
+    GroupLists L;
+    GravityParams g2 = gp;
+    g2.theta = 0.7;
+    build_group_lists(tree, g2, gs, L, pack);
+    const int bad = check_lists(tree, L, n, gs);
+    std::cout << (pack ? "packed " : "") << "group_size " << gs << ": " << L.groups.size()
+              << " groups, largest "
+              << L.max_group << ", interactions/particle "
+              << double(L.cell_interactions + L.body_interactions) / n << ", violations " << bad
+              << "\n";
+    CHECK(bad == 0);
+    CHECK(L.max_group <= gs);
+  }
+  // Coincident particles make a leaf bigger than a group: it must be split.
+  {
+    Particles c;
+    for (int i = 0; i < 100; ++i) c.push_back(Vec3(1, 2, 3), Vec3(), 1.0, i, ParticleType::Halo);
+    for (int i = 0; i < 50; ++i) c.push_back(Vec3(i, -i, 0.5 * i), Vec3(), 1.0, 100 + i, ParticleType::Halo);
+    Octree tree;
+    tree.build(c.pos, c.mass, 8);
+    for (bool pack : {false, true}) {
+      GroupLists L;
+      build_group_lists(tree, gp, 32, L, pack);
+      CHECK(check_lists(tree, L, c.size(), 32) == 0);
+      CHECK(L.max_group <= 32);
+    }
+  }
+
+  // ---- grouped tree: accuracy -------------------------------------------------
+  // The group criterion is never looser than the per-particle one, so errors
+  // should be no worse than the CPU tree's at the same opening angle (plus
+  // single precision rounding).
+  for (double theta : {0.5, 0.7, 1.0}) {
+    GravityParams g2 = gp;
+    g2.theta = theta;
+    Particles t = ref, q = ref;
+    Octree tree;
+    compute_gravity_tree(t, g2, tree);
+    GroupTreeGravity grp(g2, Device::CPU, 32, 8, theta == 0.7 ? 1 : 0);  // packed once
+    grp.compute(q);
+    const auto et = sorted_errors(t, ref), eq = sorted_errors(q, ref);
+    std::cout << "theta " << theta << ": cpu tree median " << et[n / 2] << " p99 "
+              << et[n * 99 / 100] << " | grouped median " << eq[n / 2] << " p99 "
+              << eq[n * 99 / 100] << "\n";
+    CHECK(eq[n / 2] <= 1.05 * et[n / 2] + 2e-6);
+    CHECK(eq[n * 99 / 100] <= 1.05 * et[n * 99 / 100] + 2e-5);
+    // Potentials too.
+    double worst = 0;
+    for (std::size_t i = 0; i < n; ++i) worst = std::max(worst, std::fabs(q.pot[i] / ref.pot[i] - 1));
+    CHECK(worst < 2e-3);
+  }
+
+  // GroupTreeGravity scatters tree-order results back to the right particles.
+  {
+    GravityParams g2 = gp;
+    g2.theta = 0.6;
+    Particles q = ref;
+    GroupTreeGravity grp(g2, Device::CPU, 32, 8);
+    grp.compute(q);
+    kern::GTParams kp = make_kernel_params(g2, n);
+    kp.n_groups = static_cast<kern::uint>(grp.lists().groups.size());
+    std::vector<kern::float4> out;
+    evaluate_group_lists_cpu(grp.lists(), kp, out);
+    const auto &order = grp.tree().order();
+    int mismatches = 0;
+    for (std::size_t k = 0; k < n; ++k)
+      mismatches += q.acc[order[k]].x != double(out[k].x) || q.pot[order[k]] != double(out[k].w);
+    CHECK(mismatches == 0);
+    CHECK(grp.stats().cell_interactions > 0 && grp.stats().particle_interactions > 0);
+  }
+
   // Without Metal the backend must refuse clearly rather than misbehave.
   if (!metal::compiled_in()) {
     bool threw = false;
     try {
       DirectGravity d(gp, Device::Metal);
+    } catch (const std::runtime_error &) {
+      threw = true;
+    }
+    CHECK(threw);
+    threw = false;
+    try {
+      GroupTreeGravity g(gp, Device::Metal);
     } catch (const std::runtime_error &) {
       threw = true;
     }

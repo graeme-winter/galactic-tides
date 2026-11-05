@@ -89,5 +89,32 @@ int main() {
     CHECK(e.max < 1e-3);
     CHECK(e.pot_max < 1e-5);
   }
+  // ---- tree -----------------------------------------------------------------
+  // Same lists on both sides (same packing), so the GPU should reproduce the
+  // CPU evaluation of the shared kernel to single precision rounding.
+  for (int group_size : {32, 64}) {
+    for (double theta : {0.5, 0.8}) {
+      GravityParams g2 = gp;
+      g2.theta = theta;
+      Particles cpu = ref, gpu = ref;
+      GroupTreeGravity on_cpu(g2, Device::CPU, group_size, 8, 1);
+      GroupTreeGravity on_gpu(g2, Device::Metal, group_size, 8, 1);
+      on_cpu.compute(cpu);
+      on_gpu.compute(gpu);
+      auto t0 = std::chrono::steady_clock::now();
+      on_gpu.compute(gpu);
+      const double t = seconds_since(t0);
+      const Errors same = compare(gpu, cpu), acc = compare(gpu, ref);
+      const auto &tm = on_gpu.timings();
+      std::cout << "metal tree, groups of " << group_size << ", theta " << theta
+                << ": vs cpu kernel median " << same.median << " max " << same.max
+                << " | vs direct median " << acc.median << " max " << acc.max << "  (" << t * 1e3
+                << " ms: tree " << tm.tree * 1e3 << ", lists " << tm.lists * 1e3 << ", gpu "
+                << tm.evaluate * 1e3 << ")\n";
+      CHECK(same.median < 1e-5);
+      CHECK(same.max < 1e-3);
+      CHECK(acc.median < 3e-3 * theta * theta);
+    }
+  }
   return TEST_MAIN_RESULT();
 }

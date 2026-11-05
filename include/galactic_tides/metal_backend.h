@@ -34,6 +34,14 @@ class Context {
   void direct(const std::vector<kern::float4> &bodies, const kern::GTParams &p,
               std::vector<kern::float4> &out);
 
+  // Evaluates grouped interaction lists: out[i] for every body i in tree
+  // order. p.n and p.n_groups must match the arrays; threads_per_group must
+  // be at least the largest group.
+  void tree(const std::vector<kern::float4> &bodies, const std::vector<kern::GTCell> &cells,
+            const std::vector<kern::uint> &cell_list, const std::vector<kern::GTRange> &leaf_list,
+            const std::vector<kern::GTGroup> &groups, const kern::GTParams &p,
+            unsigned threads_per_group, std::vector<kern::float4> &out);
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -13,3 +13,4 @@ galactic_tides_add_test(test_gpu_kernels)
 if(GALACTIC_TIDES_USE_METAL)
   galactic_tides_add_test(test_metal)
 endif()
+
