@@ -93,16 +93,13 @@ int main() {
   // ---- tree -----------------------------------------------------------------
   // Same lists on both sides (same packing), so the GPU should reproduce the
   // CPU evaluation of the shared kernel to single precision rounding.
-  // simds 0: threadgroup-tiled kernel; 1 and 4: SIMD kernel (groups <= 32).
-  for (unsigned simds : {0u, 1u, 4u})
-  for (int group_size : {32, 64}) {
+  for (int group_size : {8, 32}) {
     for (double theta : {0.5, 0.8}) {
       GravityParams g2 = gp;
       g2.theta = theta;
       Particles cpu = ref, gpu = ref;
       GroupTreeGravity on_cpu(g2, Device::CPU, group_size, 8, 1);
       GroupTreeGravity on_gpu(g2, Device::Metal, group_size, 8, 1);
-      on_gpu.set_metal_simds(simds);
       on_cpu.compute(cpu);
       on_gpu.compute(gpu);
       auto t0 = std::chrono::steady_clock::now();
@@ -110,45 +107,22 @@ int main() {
       const double t = seconds_since(t0);
       const Errors same = compare(gpu, cpu), acc = compare(gpu, ref);
       const auto &tm = on_gpu.timings();
-      std::cout << "metal tree (" << tm.kernel << ", simds " << simds << "), groups of "
-                << group_size << ", theta " << theta
+      std::cout << "metal tree, groups of " << group_size << ", theta " << theta
                 << ": vs cpu kernel median " << same.median << " max " << same.max
                 << " | vs direct median " << acc.median << " max " << acc.max << "  (" << t * 1e3
                 << " ms: tree " << tm.tree * 1e3 << ", lists " << tm.lists * 1e3 << ", gpu "
-                << tm.evaluate * 1e3 << " of which gpu " << tm.gpu * 1e3
-                << (tm.zero_copy ? ", zero-copy" : ", copied") << ")\n";
+                << tm.gpu * 1e3 << (tm.zero_copy ? ", zero-copy" : ", copied") << ")\n";
       CHECK(same.median < 1e-5);
       CHECK(same.max < 1e-3);
       CHECK(acc.median < 3e-3 * theta * theta);
-      // The SIMD kernel is used whenever it can be.
-      CHECK(std::string(tm.kernel) == (simds > 0 && group_size <= 32 ? "simd" : "tiled"));
     }
   }
-  // Back-to-back repeated dispatches (a timing diagnostic) give identical results.
-  {
-    Particles once = ref, many = ref;
-    GroupTreeGravity g(gp, Device::Metal, 32, 8, 1);
-    g.compute(once);
-    g.set_metal_dispatch_repeats(5);
-    g.compute(many);
-    int differ = 0;
-    for (std::size_t i = 0; i < n; ++i) differ += once.acc[i].x != many.acc[i].x;
-    CHECK(differ == 0);
-    CHECK(g.timings().gpu > 0);
-  }
 
-  // The widest groups the tree kernel accepts, and one beyond: refused.
+  // Groups wider than a SIMD group are refused on Metal.
   {
-    GravityParams g2 = gp;
-    Particles cpu = ref, gpu = ref;
-    GroupTreeGravity on_cpu(g2, Device::CPU, static_cast<int>(GT_TREE_TILE), 8, 1);
-    GroupTreeGravity on_gpu(g2, Device::Metal, static_cast<int>(GT_TREE_TILE), 8, 1);
-    on_cpu.compute(cpu);
-    on_gpu.compute(gpu);
-    CHECK(compare(gpu, cpu).max < 1e-3);
     bool threw = false;
     try {
-      GroupTreeGravity too_wide(g2, Device::Metal, static_cast<int>(GT_TREE_TILE) + 1);
+      GroupTreeGravity too_wide(gp, Device::Metal, static_cast<int>(GT_SIMD_WIDTH) + 1);
     } catch (const std::invalid_argument &) {
       threw = true;
     }

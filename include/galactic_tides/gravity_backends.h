@@ -55,10 +55,10 @@ class GroupTreeGravity : public ForceModel {
     double tree = 0, lists = 0, evaluate = 0;  // seconds, last compute()
     double gpu = 0;          // of evaluate: time on the GPU itself (Metal only)
     bool zero_copy = false;  // Metal used the arrays in place
-    const char *kernel = "";  // Metal tree kernel used: "simd" or "tiled"
   };
   // pack < 0 means the device's default: packed groups on Metal (fills the
-  // SIMD lanes), unpacked on the CPU (shorter lists, no lanes to fill).
+  // SIMD lanes), unpacked on the CPU (shorter lists, no lanes to fill). On
+  // Metal group_size may be at most GT_SIMD_WIDTH (32).
   GroupTreeGravity(const GravityParams &gp, Device device, int group_size = 32,
                    int leaf_size = 8, int pack = -1);
   ~GroupTreeGravity() override;
@@ -67,11 +67,6 @@ class GroupTreeGravity : public ForceModel {
   const Timings &timings() const { return timings_; }
   const GroupLists &lists() const { return lists_; }
   const Octree &tree() const { return tree_; }
-  // Metal only: groups per threadgroup for the SIMD tree kernel, 0 for the
-  // threadgroup-tiled kernel (see metal::Context::set_tree_simds).
-  void set_metal_simds(unsigned simds);
-  // Metal only, diagnostic: see metal::Context::set_dispatch_repeats.
-  void set_metal_dispatch_repeats(unsigned repeats);
 
  private:
   GravityParams gp_;
@@ -93,10 +88,8 @@ void evaluate_group_lists_cpu(const GroupLists &lists, const kern::GTParams &p,
 // Builds the force model named by the parameters:
 //   gravity = tree (default) | group | direct
 //   device  = cpu (default) | metal
-//   group_size (group only, default 32), group_pack (group only, default:
-//   on for metal, off for cpu), leaf_size (tree and group, default 8),
-//   metal_simds (group on metal: groups per threadgroup, default 4; 0 for
-//   the threadgroup-tiled kernel)
+//   group_size (group only, default 32, at most 32 on metal),
+//   leaf_size (tree and group, default 8)
 // and returns a one line description in *summary.
 std::unique_ptr<ForceModel> make_gravity(const Params &params, const GravityParams &gp,
                                          std::string *summary = nullptr);

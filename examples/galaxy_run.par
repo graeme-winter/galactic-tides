@@ -13,10 +13,12 @@ snapshot_interval = 1.0
 log_interval = 50
 
 # Force calculation: gravity = tree | group | direct, device = cpu | metal.
+# On a Mac, gravity = group with device = metal and theta = 0.75 is ~5x
+# faster than the CPU tree at theta = 0.6 and more accurate (the grouped
+# walk is more conservative, so it can afford the larger opening angle).
 # tree is the per-particle walk on the CPU; group is the grouped walk whose
 # interaction lists run on either (use it with device = metal for the GPU);
 # direct is O(N^2) (double on the CPU, single precision on the GPU).
 gravity = tree
 device = cpu
 # group_size = 32
-# metal_simds = 4    # GPU tree: groups per threadgroup (0: tiled kernel)

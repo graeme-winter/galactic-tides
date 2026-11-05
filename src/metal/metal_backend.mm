@@ -45,40 +45,11 @@ struct Binding {
 
 }  // namespace
 
-void start_gpu_capture(const std::string &path) {
-  std::string error;
-  @autoreleasepool {
-    MTLCaptureManager *manager = [MTLCaptureManager sharedCaptureManager];
-    if (![manager supportsDestination:MTLCaptureDestinationGPUTraceDocument]) {
-      error = "GPU capture to a file is not enabled: run with MTL_CAPTURE_ENABLED=1";
-    } else {
-      MTLCaptureDescriptor *descriptor = [[MTLCaptureDescriptor alloc] init];
-      descriptor.captureObject = MTLCreateSystemDefaultDevice();
-      descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
-      descriptor.outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
-      NSError *err = nil;
-      if (![manager startCaptureWithDescriptor:descriptor error:&err])
-        error = "GPU capture failed to start: " + describe(err);
-    }
-  }
-  if (!error.empty()) throw std::runtime_error(error);
-}
-
-void stop_gpu_capture() {
-  @autoreleasepool {
-    [[MTLCaptureManager sharedCaptureManager] stopCapture];
-  }
-}
-
 struct Context::Impl {
   id<MTLDevice> device = nil;
   id<MTLCommandQueue> queue = nil;
   id<MTLComputePipelineState> direct = nil;
   id<MTLComputePipelineState> tree = nil;
-  id<MTLComputePipelineState> tree_simd = nil;
-  unsigned simds = 4;
-  unsigned repeats = 1;
-  const char *tree_kernel = "";
   Binding bodies, cells, cell_list, body_list, groups, out;
   bool allow_no_copy = true;  // switched off if Metal ever refuses to wrap
   double gpu_seconds = 0.0;
@@ -143,7 +114,7 @@ struct Context::Impl {
     [cb waitUntilCompleted];
     if ([cb status] == MTLCommandBufferStatusError)
       return std::string("Metal: ") + what + " failed: " + describe([cb error]);
-    gpu_seconds = ([cb GPUEndTime] - [cb GPUStartTime]) / repeats;
+    gpu_seconds = [cb GPUEndTime] - [cb GPUStartTime];
     return {};
   }
 };
@@ -178,7 +149,10 @@ Context::Context() : impl_(new Impl) {
         };
         m.direct = pipeline("gt_direct");
         if (error.empty()) m.tree = pipeline("gt_tree");
-        if (error.empty()) m.tree_simd = pipeline("gt_tree_simd");
+        if (error.empty() && [m.tree threadExecutionWidth] != GT_SIMD_WIDTH)
+          error = "Metal: the tree kernel needs a SIMD width of " +
+                  std::to_string(GT_SIMD_WIDTH) + ", this GPU has " +
+                  std::to_string((unsigned long)[m.tree threadExecutionWidth]);
       }
     }
   }
@@ -195,9 +169,6 @@ std::string Context::device_name() const {
   return name;
 }
 
-void Context::set_tree_simds(unsigned simds) { impl_->simds = simds; }
-void Context::set_dispatch_repeats(unsigned repeats) { impl_->repeats = std::max(1u, repeats); }
-const char *Context::last_tree_kernel() const { return impl_->tree_kernel; }
 double Context::last_gpu_seconds() const { return impl_->gpu_seconds; }
 bool Context::last_zero_copy() const { return impl_->zero_copy; }
 
@@ -223,9 +194,8 @@ void Context::direct(const gpu_vector<kern::float4> &bodies, const kern::GTParam
       [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
       [enc setBuffer:m.out.buf offset:0 atIndex:1];
       [enc setBytes:&p length:sizeof(p) atIndex:2];
-      for (unsigned r = 0; r < m.repeats; ++r)
-        [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
       [enc endEncoding];
       error = m.finish(cb, "direct kernel");
       if (error.empty()) m.collect_output(m.out, out);
@@ -240,60 +210,49 @@ void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern
                    const gpu_vector<kern::uint> &cell_list,
                    const gpu_vector<kern::uint> &body_list,
                    const gpu_vector<kern::GTGroup> &groups, const kern::GTParams &p,
-                   unsigned threads_per_group, gpu_vector<kern::float4> &out) {
+                   gpu_vector<kern::float4> &out) {
   const size_t n = bodies.size();
   out.resize(n);
   impl_->gpu_seconds = 0.0;
   if (n == 0 || groups.empty()) return;
   if (p.n != n || p.n_groups != groups.size())
     throw std::invalid_argument("Metal tree: parameters do not match the arrays");
+  for (const auto &g : groups)
+    if (g.end - g.begin > GT_SIMD_WIDTH)
+      throw std::invalid_argument("Metal tree: a group has more than " +
+                                  std::to_string(GT_SIMD_WIDTH) + " targets");
   std::string error;
   @autoreleasepool {
     try {
       Impl &m = *impl_;
-      const bool use_simd =
-          m.simds > 0 && threads_per_group <= GT_SIMD_WIDTH &&
-          [m.tree_simd threadExecutionWidth] == GT_SIMD_WIDTH &&
-          m.simds * GT_SIMD_WIDTH <= [m.tree_simd maxTotalThreadsPerThreadgroup];
-      const NSUInteger limit = std::min<NSUInteger>(GT_TREE_TILE, [m.tree maxTotalThreadsPerThreadgroup]);
-      if (!use_simd && (threads_per_group == 0 || threads_per_group > limit)) {
-        error = "Metal tree: " + std::to_string(threads_per_group) +
-                " threads per group, but at most " + std::to_string((unsigned long)limit) +
-                " are possible here; use a smaller group_size";
-      } else {
-        m.bind_input(m.bodies, bodies);
-        m.bind_input(m.cells, cells);
-        m.bind_input(m.cell_list, cell_list);
-        m.bind_input(m.body_list, body_list);
-        m.bind_input(m.groups, groups);
-        m.bind_output(m.out, out);
-        m.zero_copy = m.bodies.no_copy && m.cells.no_copy && m.cell_list.no_copy &&
-                      m.body_list.no_copy && m.groups.no_copy && m.out.no_copy;
-        id<MTLCommandBuffer> cb = [m.queue commandBuffer];
-        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-        [enc setComputePipelineState:(use_simd ? m.tree_simd : m.tree)];
-        [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
-        [enc setBuffer:m.cells.buf offset:0 atIndex:1];
-        [enc setBuffer:m.cell_list.buf offset:0 atIndex:2];
-        [enc setBuffer:m.body_list.buf offset:0 atIndex:3];
-        [enc setBuffer:m.groups.buf offset:0 atIndex:4];
-        [enc setBuffer:m.out.buf offset:0 atIndex:5];
-        [enc setBytes:&p length:sizeof(p) atIndex:6];
-        for (unsigned r = 0; r < m.repeats; ++r) {
-          if (use_simd) {
-            const NSUInteger threadgroups = (groups.size() + m.simds - 1) / m.simds;
-            [enc dispatchThreadgroups:MTLSizeMake(threadgroups, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(m.simds * GT_SIMD_WIDTH, 1, 1)];
-          } else {
-            [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
-          }
-        }
-        [enc endEncoding];
-        m.tree_kernel = use_simd ? "simd" : "tiled";
-        error = m.finish(cb, "tree kernel");
-        if (error.empty()) m.collect_output(m.out, out);
-      }
+      m.bind_input(m.bodies, bodies);
+      m.bind_input(m.cells, cells);
+      m.bind_input(m.cell_list, cell_list);
+      m.bind_input(m.body_list, body_list);
+      m.bind_input(m.groups, groups);
+      m.bind_output(m.out, out);
+      m.zero_copy = m.bodies.no_copy && m.cells.no_copy && m.cell_list.no_copy &&
+                    m.body_list.no_copy && m.groups.no_copy && m.out.no_copy;
+      // Groups per threadgroup: one per SIMD group. Measured on an M4 Max,
+      // 1, 4 and 8 run at the same speed.
+      const NSUInteger simds = std::max<NSUInteger>(
+          1, std::min<NSUInteger>(4, [m.tree maxTotalThreadsPerThreadgroup] / GT_SIMD_WIDTH));
+      const NSUInteger threadgroups = (groups.size() + simds - 1) / simds;
+      id<MTLCommandBuffer> cb = [m.queue commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+      [enc setComputePipelineState:m.tree];
+      [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
+      [enc setBuffer:m.cells.buf offset:0 atIndex:1];
+      [enc setBuffer:m.cell_list.buf offset:0 atIndex:2];
+      [enc setBuffer:m.body_list.buf offset:0 atIndex:3];
+      [enc setBuffer:m.groups.buf offset:0 atIndex:4];
+      [enc setBuffer:m.out.buf offset:0 atIndex:5];
+      [enc setBytes:&p length:sizeof(p) atIndex:6];
+      [enc dispatchThreadgroups:MTLSizeMake(threadgroups, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(simds * GT_SIMD_WIDTH, 1, 1)];
+      [enc endEncoding];
+      error = m.finish(cb, "tree kernel");
+      if (error.empty()) m.collect_output(m.out, out);
     } catch (const std::exception &e) {
       error = e.what();  // rethrown outside the autorelease pool
     }

@@ -134,25 +134,7 @@ void run_direct(const void *bodies, const void *params, unsigned threads_per_gro
   }
 }
 
-void run_tree(const void *bodies, const void *cells, const void *cell_list, const void *body_list,
-              const void *groups, const void *params, unsigned threads_per_group, void *out) {
-  ::GTParams p = *static_cast<const ::GTParams *>(params);
-  for (unsigned gid = 0; gid < p.n_groups; ++gid) {
-    g_barrier.reset(threads_per_group);
-    std::vector<std::thread> threads;
-    for (unsigned lid = 0; lid < threads_per_group; ++lid)
-      threads.emplace_back([&, lid] {
-        gt_tree(static_cast<const metal::float4 *>(bodies), static_cast<const ::GTCell *>(cells),
-                static_cast<const unsigned *>(cell_list), static_cast<const unsigned *>(body_list),
-                static_cast<const ::GTGroup *>(groups), static_cast<metal::float4 *>(out), p, gid,
-                lid, threads_per_group);
-        g_barrier.exit_thread();
-      });
-    for (auto &t : threads) t.join();
-  }
-}
-
-void run_tree_simd(const void *bodies, const void *cells, const void *cell_list,
+void run_tree(const void *bodies, const void *cells, const void *cell_list,
                    const void *body_list, const void *groups, const void *params,
                    unsigned simds_per_threadgroup, void *out) {
   ::GTParams p = *static_cast<const ::GTParams *>(params);
@@ -166,7 +148,7 @@ void run_tree_simd(const void *bodies, const void *cells, const void *cell_list,
         threads.emplace_back([&, s, lane] {
           tl_simd = s;
           tl_lane = lane;
-          gt_tree_simd(static_cast<const metal::float4 *>(bodies),
+          gt_tree(static_cast<const metal::float4 *>(bodies),
                        static_cast<const ::GTCell *>(cells), static_cast<const unsigned *>(cell_list),
                        static_cast<const unsigned *>(body_list),
                        static_cast<const ::GTGroup *>(groups), static_cast<metal::float4 *>(out), p,

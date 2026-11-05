@@ -22,12 +22,6 @@ extern const char *const kKernelSource;
 // True if built with Metal support (does not check for a device).
 bool compiled_in();
 
-// Record everything the default GPU does between these calls into a
-// .gputrace document that Xcode opens with per-kernel performance counters
-// (occupancy, limiters). Outside Xcode, run with MTL_CAPTURE_ENABLED=1.
-void start_gpu_capture(const std::string &path);
-void stop_gpu_capture();
-
 class Context {
  public:
   Context();  // throws if Metal is unavailable or the kernels fail to compile
@@ -42,26 +36,12 @@ class Context {
               gpu_vector<kern::float4> &out);
 
   // Evaluates grouped interaction lists: out[i] for every body i in tree
-  // order. p.n and p.n_groups must match the arrays; threads_per_group must
-  // be at least the largest group.
-  // threads_per_group may be at most GT_TREE_TILE.
+  // order, one group per SIMD group. p.n and p.n_groups must match the
+  // arrays, and no group may have more than GT_SIMD_WIDTH targets.
   void tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern::GTCell> &cells,
             const gpu_vector<kern::uint> &cell_list, const gpu_vector<kern::uint> &body_list,
             const gpu_vector<kern::GTGroup> &groups, const kern::GTParams &p,
-            unsigned threads_per_group, gpu_vector<kern::float4> &out);
-
-  // Tree kernel choice: with simds > 0 (default 4), groups of at most 32 run
-  // as one group per SIMD group, `simds` groups per threadgroup
-  // (gt_tree_simd); otherwise, or for bigger groups, one group per
-  // threadgroup with threadgroup-memory tiles (gt_tree).
-  void set_tree_simds(unsigned simds);
-  // "simd" or "tiled": the tree kernel the last tree() call used.
-  const char *last_tree_kernel() const;
-
-  // Diagnostic: encode each dispatch `repeats` times back to back in one
-  // command buffer (the results are identical), and report GPU time per
-  // dispatch. Keeps the GPU continuously busy, so its clock can ramp up.
-  void set_dispatch_repeats(unsigned repeats);
+            gpu_vector<kern::float4> &out);
 
   // Time the GPU spent on the last dispatch, from the command buffer.
   double last_gpu_seconds() const;

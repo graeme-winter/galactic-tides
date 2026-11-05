@@ -55,44 +55,36 @@ python3 ../scripts/plot_snapshot.py frames encounter/snap_*.hdf5 --extent 40 --v
 | `group` | `cpu` or `metal` | grouped walk: one walk per group of ≤ `group_size` (32) nearby particles builds an interaction list that every particle in the group evaluates, in single precision |
 | `direct` | `cpu` or `metal` | O(N²); double on the CPU, tiled single precision kernel on the GPU |
 
+On an Apple M4 Max with a 200,000 particle galaxy (`galactic-tides-bench`):
+
+| solver | θ | ms per force evaluation | 99th percentile force error |
+|--------|---|------------------------:|----------------------------:|
+| `tree` on the CPU | 0.6 | 118 | 9.0 × 10⁻³ |
+| `group` on Metal | 0.75 | 24 | 5.9 × 10⁻³ |
+| `direct` on Metal | – | 122 | 1.8 × 10⁻⁵ |
+
 The grouped walk (Barnes 1990) does 10–30× fewer tree walks and gives every
 thread in a GPU SIMD group the same work. Its opening test is the
 per-particle one applied to the group's bounding box, so it is never less
 accurate; in practice it is about twice as accurate as `tree` at the same θ
-(more so in the tail), for about 50% more interactions. On the GPU, small sibling groups are
-packed together (`group_pack`, on by default for Metal) so that the 32
-lanes are mostly busy. Only siblings are merged, so a packed group stays
-inside its parent cell: merging any neighbours in tree order once produced a
-group spanning the halo whose list held ~187,000 entries, and since each
-group's list is walked serially by one SIMD group, that single group set the
-GPU kernel's time.
+(more so in the tail), which is why it can run at θ = 0.75.
 
-The tree and the lists are built on the CPU in double precision, then
-positions relative to the root cell are evaluated in single precision, which
-is ample for collisionless forces. There are two GPU tree kernels. The default (`metal_simds = 4`) runs each
-group on one SIMD group and puts several groups in a threadgroup; the lanes
-fetch list entries in parallel and pass them round with `simd_shuffle`, with
-no threadgroup memory and no barriers. The other (`metal_simds = 0`, and any
-group bigger than 32) runs one group per threadgroup, staging entries
-through threadgroup memory; the SIMD kernel avoids its barriers and was
-about 30% faster on an M4 Max. The lists live in
-page-aligned host arrays that Metal wraps in place (unified memory), so
-nothing is copied between the CPU and the GPU.
+The tree and the lists are built on the CPU in double precision; the lists
+are evaluated in single precision relative to the root cell, which is ample
+for collisionless forces. On the GPU each group runs on one SIMD group: the
+lanes fetch list entries in parallel and pass them round with
+`simd_shuffle`. Small sibling groups are packed together on the GPU so that
+the 32 lanes are mostly busy. Only siblings are merged, so a packed group
+stays inside its parent cell. Merging any neighbours in tree order once
+produced a group spanning the halo with a list of ~187,000 entries; since
+each list is walked serially by one SIMD group, that one group set the
+kernel's time. The arrays live in page-aligned host memory that Metal wraps
+in place (unified memory), so nothing is copied.
 
-`galactic-tides-bench n=200000` times the solvers on a Hernquist galaxy and
-checks them against double precision direct summation on a sample. For the
-GPU tree it also reports the time on the GPU itself (from the command
-buffer), whether the arrays were used in place, the group fill, the longest list
-relative to the mean (a long one sets the GPU time), and the GPU's
-interaction rate. `quadrupole=0` and `group_size=` help tell arithmetic
-limits from occupancy, `simds=` chooses the tree kernel, and
-
-```sh
-MTL_CAPTURE_ENABLED=1 ./galactic-tides-bench backends=group-metal repeat=1 gpu_trace=tree.gputrace
-```
-
-records one force evaluation for Xcode, which shows the kernel's occupancy
-and performance limiters.
+`galactic-tides-bench n=200000` times the solvers and checks them against double
+precision direct summation on a sample. For the GPU tree it also shows the
+time on the GPU itself, the group fill, the longest list against the mean,
+and the GPU's interaction rate.
 
 **Building with Metal.** On macOS, Metal is on by default
 (`-DGALACTIC_TIDES_USE_METAL=OFF` to disable). Kernels are compiled at run time
@@ -107,16 +99,17 @@ of Metal and C++, so the CPU runs exactly what the GPU runs. On any platform:
 * `test_gpu_kernels` checks struct layouts against Metal's, lints everything
   Metal will compile (unsuffixed float literals, `double`, `std::`,
   references), compares the kernels with double precision, and checks the
-  interaction lists exactly: every body is covered once per group and no
-  accepted cell contains one of the group's own targets.
+  interaction lists exactly: every body is covered once per group, no
+  accepted cell contains one of the group's own targets, packed groups are
+  runs of siblings, and no list dwarfs the mean.
 * `test_metal_mock` compiles `src/metal/gravity_kernels.metal` itself as C++
-  against a mock `metal_stdlib`, and runs it with one CPU thread per GPU
-  thread, real barriers and shared threadgroup memory. Its results must be
-  bit-identical to the CPU path, and a thread that leaves a kernel while
-  others still have barriers to reach is reported. `simd_shuffle` is
-  emulated with per-SIMD-group barriers, so the SIMD kernel is checked the
-  same way, including that every lane takes part in every shuffle. Removing a barrier,
-  shifting an index or letting idle threads exit early all make it fail.
+  against a mock `metal_stdlib` and runs it with one CPU thread per GPU
+  thread: real barriers and shared threadgroup memory for the brute-force
+  kernel, `simd_shuffle` emulated with per-SIMD-group barriers for the tree
+  kernel. Results must be bit-identical to the CPU path, and a thread that
+  leaves while others still have barriers or shuffles to reach is reported.
+  Removing a barrier, shifting an index, reading the wrong lane or letting
+  idle threads leave early all make it fail.
 
 On a Mac, `test_metal` then runs the real kernels on the GPU against the CPU.
 What only a Mac can check is Metal-specific semantics (address spaces,

@@ -43,12 +43,8 @@ GT_END_NAMESPACE
 
 GT_BEGIN_NAMESPACE
 
-// Most threads per threadgroup the tree kernel accepts: the size of its
-// threadgroup tiles (3 x 16 bytes for cells, 16 + 4 for bodies, per entry).
-// Groups must not be larger.
-#define GT_TREE_TILE 128u
-
-// SIMD group width the gt_tree_simd kernel is written for (Apple GPUs).
+// SIMD group width the gt_tree kernel is written for (Apple GPUs): groups
+// evaluated on the GPU have at most this many targets.
 #define GT_SIMD_WIDTH 32u
 
 // Run parameters, passed by value (setBytes on the Metal side).
@@ -162,7 +158,7 @@ inline GTAcc gt_group_bodies(GTAcc a, uint i, float4 bi, GTGroup g,
 }
 
 // Target i (tree order) of group g: cells, then bodies. The GPU kernel does
-// the same in the same order, staging cells through threadgroup memory.
+// the same in the same order, sharing list entries between lanes.
 inline GTAcc gt_group_accel(uint i, GTGroup g, GT_DEVICE const float4 *bodies,
                             GT_DEVICE const GTCell *cells, GT_DEVICE const uint *cell_list,
                             GT_DEVICE const uint *body_list, GTParams p) {

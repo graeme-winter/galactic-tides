@@ -91,21 +91,13 @@ GroupTreeGravity::GroupTreeGravity(const GravityParams &gp, Device device, int g
       leaf_size_(leaf_size),
       pack_(pack < 0 ? device == Device::Metal : pack != 0) {
   if (group_size_ < 1) throw std::invalid_argument("group_size must be at least 1");
-  if (device_ == Device::Metal && group_size_ > static_cast<int>(GT_TREE_TILE))
-    throw std::invalid_argument("group_size can be at most " + std::to_string(GT_TREE_TILE) +
+  if (device_ == Device::Metal && group_size_ > static_cast<int>(GT_SIMD_WIDTH))
+    throw std::invalid_argument("group_size can be at most " + std::to_string(GT_SIMD_WIDTH) +
                                 " on Metal");
   if (device_ == Device::Metal) ctx_ = std::make_unique<metal::Context>();
 }
 
 GroupTreeGravity::~GroupTreeGravity() = default;
-
-void GroupTreeGravity::set_metal_simds(unsigned simds) {
-  if (ctx_) ctx_->set_tree_simds(simds);
-}
-
-void GroupTreeGravity::set_metal_dispatch_repeats(unsigned repeats) {
-  if (ctx_) ctx_->set_dispatch_repeats(repeats);
-}
 
 WalkStats GroupTreeGravity::stats() const {
   WalkStats s;
@@ -128,15 +120,14 @@ void GroupTreeGravity::compute(Particles &p) {
   kp.n_groups = static_cast<kern::uint>(lists_.groups.size());
   if (device_ == Device::Metal)
     ctx_->tree(lists_.bodies, lists_.cells, lists_.cell_list, lists_.body_list, lists_.groups, kp,
-               static_cast<unsigned>(std::max(lists_.max_group, 1)), out_);
+               out_);
   else
     evaluate_group_lists_cpu(lists_, kp, out_);
   const auto t3 = clock::now();
-  timings_ = {secs(t0, t1), secs(t1, t2), secs(t2, t3), 0.0, false, ""};
+  timings_ = {secs(t0, t1), secs(t1, t2), secs(t2, t3), 0.0, false};
   if (device_ == Device::Metal) {
     timings_.gpu = ctx_->last_gpu_seconds();
     timings_.zero_copy = ctx_->last_zero_copy();
-    timings_.kernel = ctx_->last_tree_kernel();
   }
   const auto &order = tree_.order();
   for (std::size_t k = 0; k < order.size(); ++k) {
@@ -165,11 +156,8 @@ std::unique_ptr<ForceModel> make_gravity(const Params &params, const GravityPara
   } else if (kind == "group") {
     const int group = static_cast<int>(params.get_int("group_size", 32));
     const int leaf = static_cast<int>(params.get_int("leaf_size", 8));
-    const bool pack = params.get_bool("group_pack", device == Device::Metal);
-    auto g = std::make_unique<GroupTreeGravity>(gp, device, group, leaf, pack ? 1 : 0);
-    if (device == Device::Metal)
-      g->set_metal_simds(static_cast<unsigned>(params.get_int("metal_simds", 4)));
-    model = std::move(g);
+    model = std::make_unique<GroupTreeGravity>(gp, device, group, leaf);
+    const bool pack = device == Device::Metal;
     what = std::string("tree with grouped walk (groups of up to ") + std::to_string(group) +
            (pack ? ", packed" : "") + "), single precision lists on " + device_name(device);
   } else if (kind == "direct") {

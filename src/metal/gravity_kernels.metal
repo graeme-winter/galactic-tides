@@ -42,15 +42,14 @@ kernel void gt_direct(device const float4 *bodies [[buffer(0)]],
   if (active) out[i] = float4(a.ax, a.ay, a.az, a.pot);
 }
 
-// Tree: one threadgroup per group, one thread per target in it. All threads
-// in a threadgroup share the group's interaction list, so both parts of it
-// are staged through threadgroup memory a tile at a time, as in gt_direct:
-// each thread fetches one entry (an index, then the cell or body it names),
-// and after a barrier every thread evaluates the whole tile. That turns
-// chains of dependent loads into one parallel load per tile. Threads beyond
-// the group's targets help load and take part in every barrier, then stop.
-// Dispatched with threadgroups of at most GT_TREE_TILE threads, at least as
-// many as the largest group.
+// Tree: one group per SIMD group, several SIMD groups per threadgroup. Lanes
+// share the group's list entries with simd_shuffle: each lane fetches one
+// entry (an index, then the cell or body it names) into registers, then every
+// lane evaluates all of them, taking each in turn from the lane that fetched
+// it. No threadgroup memory and no barriers. Groups must have at most
+// GT_SIMD_WIDTH targets and the pipeline's SIMD width must be GT_SIMD_WIDTH;
+// every lane of a SIMD group runs every loop iteration (lanes past the
+// group's targets still fetch), as simd_shuffle requires.
 kernel void gt_tree(device const float4 *bodies [[buffer(0)]],
                     device const GTCell *cells [[buffer(1)]],
                     device const uint *cell_list [[buffer(2)]],
@@ -59,81 +58,9 @@ kernel void gt_tree(device const float4 *bodies [[buffer(0)]],
                     device float4 *out [[buffer(5)]],
                     constant GTParams &params [[buffer(6)]],
                     uint gid [[threadgroup_position_in_grid]],
-                    uint lid [[thread_position_in_threadgroup]],
-                    uint tgsize [[threads_per_threadgroup]]) {
-  threadgroup float4 tile_a[GT_TREE_TILE];  // cell com and mass, or body
-  threadgroup float4 tile_q0[GT_TREE_TILE];
-  threadgroup float4 tile_q1[GT_TREE_TILE];
-  threadgroup uint tile_j[GT_TREE_TILE];    // body index, to skip the target itself
-  GTParams p = params;
-  if (gid >= p.n_groups) return;  // whole threadgroup, so no barrier is left waiting
-  GTGroup g = groups[gid];
-  uint i = g.begin + lid;
-  bool active = i < g.end;
-  float4 bi = float4(0.0f);
-  if (active) bi = bodies[i];
-  GTAcc a = {0.0f, 0.0f, 0.0f, 0.0f};
-
-  for (uint base = g.cell_begin; base < g.cell_end; base += tgsize) {
-    uint k = base + lid;
-    if (k < g.cell_end) {
-      GTCell c = cells[cell_list[k]];
-      tile_a[lid] = c.com_mass;
-      tile_q0[lid] = c.q0;
-      tile_q1[lid] = c.q1;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint count = min(tgsize, g.cell_end - base);
-    for (uint t = 0; t < count; ++t) {
-      GTCell c;
-      c.com_mass = tile_a[t];
-      c.q0 = tile_q0[t];
-      c.q1 = tile_q1[t];
-      a = gt_cell(a, bi.x, bi.y, bi.z, c, p.G, p.eps2, p.quadrupole);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-  }
-
-  for (uint base = g.body_begin; base < g.body_end; base += tgsize) {
-    uint k = base + lid;
-    if (k < g.body_end) {
-      uint j = body_list[k];
-      tile_j[lid] = j;
-      tile_a[lid] = bodies[j];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint count = min(tgsize, g.body_end - base);
-    for (uint t = 0; t < count; ++t) {
-      if (tile_j[t] == i) continue;
-      float4 bj = tile_a[t];
-      a = gt_body(a, bi.x, bi.y, bi.z, bj, p.G, p.eps2);
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-  }
-
-  if (active) out[i] = float4(a.ax, a.ay, a.az, a.pot);
-}
-
-// Tree, one group per SIMD group: several groups share a threadgroup (one per
-// SIMD group), so a GPU core keeps many more of them in flight than with one
-// single-SIMD threadgroup per group. Lanes share list entries with
-// simd_shuffle: each lane fetches one entry into registers, then every lane
-// evaluates all of them, taking each in turn from the lane that fetched it.
-// No threadgroup memory and no barriers. Groups must have at most
-// GT_SIMD_WIDTH targets and the pipeline's SIMD width must be GT_SIMD_WIDTH;
-// every lane of a SIMD group runs every loop iteration (lanes past the
-// group's targets still fetch), as simd_shuffle requires.
-kernel void gt_tree_simd(device const float4 *bodies [[buffer(0)]],
-                         device const GTCell *cells [[buffer(1)]],
-                         device const uint *cell_list [[buffer(2)]],
-                         device const uint *body_list [[buffer(3)]],
-                         device const GTGroup *groups [[buffer(4)]],
-                         device float4 *out [[buffer(5)]],
-                         constant GTParams &params [[buffer(6)]],
-                         uint gid [[threadgroup_position_in_grid]],
-                         uint simd [[simdgroup_index_in_threadgroup]],
-                         uint simds [[simdgroups_per_threadgroup]],
-                         uint lane [[thread_index_in_simdgroup]]) {
+                    uint simd [[simdgroup_index_in_threadgroup]],
+                    uint simds [[simdgroups_per_threadgroup]],
+                    uint lane [[thread_index_in_simdgroup]]) {
   GTParams p = params;
   uint group = gid * simds + simd;
   if (group >= p.n_groups) return;  // the whole SIMD group leaves together

@@ -69,34 +69,7 @@ int main() {
     CHECK(d < 1e-4);  // summation order differs, nothing else should
   }
 
-  // ---- tree kernel on grouped lists -------------------------------------------
-  for (bool pack : {false, true}) {
-    for (int gs : {8, 32}) {
-      GravityParams g2 = gp;
-      g2.theta = 0.7;
-      Octree tree;
-      tree.build(ref.pos, ref.mass, 4);
-      GroupLists L;
-      build_group_lists(tree, g2, gs, L, pack);
-      kern::GTParams tp = make_kernel_params(g2, n);
-      tp.n_groups = static_cast<kern::uint>(L.groups.size());
-      gpu_vector<kern::float4> cpu, gpu(n, kern::float4{NAN, NAN, NAN, NAN});
-      evaluate_group_lists_cpu(L, tp, cpu);
-      // Exactly the largest group, wider (extra threads only help load the
-      // cell tiles), and the widest the kernel allows.
-      for (unsigned threads : {static_cast<unsigned>(L.max_group),
-                               static_cast<unsigned>(L.max_group) + 3, GT_TREE_TILE}) {
-        std::fill(gpu.begin(), gpu.end(), kern::float4{NAN, NAN, NAN, NAN});
-        mock::run_tree(L.bodies.data(), L.cells.data(), L.cell_list.data(), L.body_list.data(),
-                       L.groups.data(), &tp, threads, gpu.data());
-        const double d = max_rel(gpu, cpu);
-        std::cout << "gt_tree, groups of " << gs << (pack ? " packed" : "") << ", " << threads
-                  << " threads: max relative difference from the CPU evaluation " << d << "\n";
-        CHECK(d == 0.0);  // same arithmetic in the same order: bit identical
-      }
-    }
-  }
-  // ---- tree kernel, one group per SIMD group, simd_shuffle ---------------------
+  // ---- tree kernel: one group per SIMD group, simd_shuffle -------------------
   // A smaller system: every emulated shuffle is a pair of barrier waits.
   {
     const std::size_t n2 = 307;
@@ -117,10 +90,10 @@ int main() {
       // with SIMD groups that have no group and must leave cleanly.
       for (unsigned simds : {1u, 3u, 4u}) {
         std::fill(gpu.begin(), gpu.end(), kern::float4{NAN, NAN, NAN, NAN});
-        mock::run_tree_simd(L.bodies.data(), L.cells.data(), L.cell_list.data(),
+        mock::run_tree(L.bodies.data(), L.cells.data(), L.cell_list.data(),
                             L.body_list.data(), L.groups.data(), &tp, simds, gpu.data());
         const double d = max_rel(gpu, cpu);
-        std::cout << "gt_tree_simd, " << L.groups.size() << " groups" << (pack ? " packed" : "")
+        std::cout << "gt_tree, " << L.groups.size() << " groups" << (pack ? " packed" : "")
                   << ", " << simds << " per threadgroup: max relative difference " << d << "\n";
         CHECK(d == 0.0);
       }
