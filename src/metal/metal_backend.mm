@@ -77,6 +77,7 @@ struct Context::Impl {
   id<MTLComputePipelineState> tree = nil;
   id<MTLComputePipelineState> tree_simd = nil;
   unsigned simds = 4;
+  unsigned repeats = 1;
   const char *tree_kernel = "";
   Binding bodies, cells, cell_list, body_list, groups, out;
   bool allow_no_copy = true;  // switched off if Metal ever refuses to wrap
@@ -142,7 +143,7 @@ struct Context::Impl {
     [cb waitUntilCompleted];
     if ([cb status] == MTLCommandBufferStatusError)
       return std::string("Metal: ") + what + " failed: " + describe([cb error]);
-    gpu_seconds = [cb GPUEndTime] - [cb GPUStartTime];
+    gpu_seconds = ([cb GPUEndTime] - [cb GPUStartTime]) / repeats;
     return {};
   }
 };
@@ -195,6 +196,7 @@ std::string Context::device_name() const {
 }
 
 void Context::set_tree_simds(unsigned simds) { impl_->simds = simds; }
+void Context::set_dispatch_repeats(unsigned repeats) { impl_->repeats = std::max(1u, repeats); }
 const char *Context::last_tree_kernel() const { return impl_->tree_kernel; }
 double Context::last_gpu_seconds() const { return impl_->gpu_seconds; }
 bool Context::last_zero_copy() const { return impl_->zero_copy; }
@@ -221,8 +223,9 @@ void Context::direct(const gpu_vector<kern::float4> &bodies, const kern::GTParam
       [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
       [enc setBuffer:m.out.buf offset:0 atIndex:1];
       [enc setBytes:&p length:sizeof(p) atIndex:2];
-      [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      for (unsigned r = 0; r < m.repeats; ++r)
+        [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
       [enc endEncoding];
       error = m.finish(cb, "direct kernel");
       if (error.empty()) m.collect_output(m.out, out);
@@ -276,13 +279,15 @@ void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern
         [enc setBuffer:m.groups.buf offset:0 atIndex:4];
         [enc setBuffer:m.out.buf offset:0 atIndex:5];
         [enc setBytes:&p length:sizeof(p) atIndex:6];
-        if (use_simd) {
-          const NSUInteger threadgroups = (groups.size() + m.simds - 1) / m.simds;
-          [enc dispatchThreadgroups:MTLSizeMake(threadgroups, 1, 1)
-              threadsPerThreadgroup:MTLSizeMake(m.simds * GT_SIMD_WIDTH, 1, 1)];
-        } else {
-          [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
-              threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
+        for (unsigned r = 0; r < m.repeats; ++r) {
+          if (use_simd) {
+            const NSUInteger threadgroups = (groups.size() + m.simds - 1) / m.simds;
+            [enc dispatchThreadgroups:MTLSizeMake(threadgroups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(m.simds * GT_SIMD_WIDTH, 1, 1)];
+          } else {
+            [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
+          }
         }
         [enc endEncoding];
         m.tree_kernel = use_simd ? "simd" : "tiled";

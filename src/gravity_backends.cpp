@@ -103,6 +103,10 @@ void GroupTreeGravity::set_metal_simds(unsigned simds) {
   if (ctx_) ctx_->set_tree_simds(simds);
 }
 
+void GroupTreeGravity::set_metal_dispatch_repeats(unsigned repeats) {
+  if (ctx_) ctx_->set_dispatch_repeats(repeats);
+}
+
 WalkStats GroupTreeGravity::stats() const {
   WalkStats s;
   s.cell_interactions = lists_.cell_interactions;

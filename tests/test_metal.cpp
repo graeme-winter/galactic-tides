@@ -124,6 +124,19 @@ int main() {
       CHECK(std::string(tm.kernel) == (simds > 0 && group_size <= 32 ? "simd" : "tiled"));
     }
   }
+  // Back-to-back repeated dispatches (a timing diagnostic) give identical results.
+  {
+    Particles once = ref, many = ref;
+    GroupTreeGravity g(gp, Device::Metal, 32, 8, 1);
+    g.compute(once);
+    g.set_metal_dispatch_repeats(5);
+    g.compute(many);
+    int differ = 0;
+    for (std::size_t i = 0; i < n; ++i) differ += once.acc[i].x != many.acc[i].x;
+    CHECK(differ == 0);
+    CHECK(g.timings().gpu > 0);
+  }
+
   // The widest groups the tree kernel accepts, and one beyond: refused.
   {
     GravityParams g2 = gp;

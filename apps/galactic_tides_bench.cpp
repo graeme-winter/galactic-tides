@@ -3,10 +3,12 @@
 //   galactic-tides-bench [n=100000] [theta=0.6] [eps=0.05] [quadrupole=1] [repeat=3]
 //                   [sample=1000] [group_size=32] [group_pack=default]
 //                   [backends=tree-cpu,group-cpu,group-metal,direct-metal]
-//                   [simds=4] [gpu_trace=bench.gputrace]
+//                   [simds=4] [gpu_repeat=0] [gpu_trace=bench.gputrace]
 //
 // simds: groups per threadgroup for the Metal tree's SIMD kernel; 0 selects
-// the threadgroup-tiled kernel instead.
+// the threadgroup-tiled kernel instead. gpu_repeat > 0 also times the Metal
+// tree's evaluation with that many dispatches back to back in one command
+// buffer, keeping the GPU continuously busy (a check on GPU clock ramp-up).
 //
 // gpu_trace records one extra group-metal force evaluation into a .gputrace
 // document for Xcode's GPU performance counters; run with
@@ -69,6 +71,7 @@ int main(int argc, char **argv) {
     const int pack = params.has("group_pack") ? (params.get_bool("group_pack", true) ? 1 : 0) : -1;
     const std::string gpu_trace = params.get_string("gpu_trace", "");
     const long simds = params.get_int("simds", 4);
+    const long gpu_repeat = params.get_int("gpu_repeat", 0);
     std::string def = "tree-cpu,group-cpu";
     if (metal::compiled_in()) def += ",group-metal,direct-metal";
     const auto backends = split(params.get_string("backends", def));
@@ -175,6 +178,23 @@ int main(int argc, char **argv) {
         }
       }
       std::printf("\n");
+      if (name == "group-metal" && gpu_repeat > 0) {
+        group->set_metal_dispatch_repeats(static_cast<unsigned>(gpu_repeat));
+        Particles q = p;
+        model_ptr->compute(q);  // ramp up
+        model_ptr->compute(q);
+        const double per = group->timings().gpu;
+        group->set_metal_dispatch_repeats(1);
+        double worst = 0;
+        for (std::size_t i = 0; i < p.size(); i += 97)
+          worst = std::max(worst, norm(q.acc[i] - p.acc[i]) / norm(p.acc[i]));
+        std::printf("%-14s back to back x%ld: gpu %.2f ms per dispatch, %.2e interactions/s "
+                    "(results %s)\n",
+                    "", gpu_repeat, per * 1e3,
+                    double(group->lists().cell_interactions + group->lists().body_interactions) /
+                        std::max(per, 1e-9),
+                    worst == 0 ? "identical" : "DIFFER");
+      }
       if (name == "group-metal" && !gpu_trace.empty()) {
         metal::start_gpu_capture(gpu_trace);
         model_ptr->compute(p);

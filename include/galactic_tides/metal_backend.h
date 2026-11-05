@@ -58,6 +58,11 @@ class Context {
   // "simd" or "tiled": the tree kernel the last tree() call used.
   const char *last_tree_kernel() const;
 
+  // Diagnostic: encode each dispatch `repeats` times back to back in one
+  // command buffer (the results are identical), and report GPU time per
+  // dispatch. Keeps the GPU continuously busy, so its clock can ramp up.
+  void set_dispatch_repeats(unsigned repeats);
+
   // Time the GPU spent on the last dispatch, from the command buffer.
   double last_gpu_seconds() const;
   // Whether the last dispatch used the arrays in place (no copies).

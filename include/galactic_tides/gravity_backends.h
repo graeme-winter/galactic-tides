@@ -70,6 +70,8 @@ class GroupTreeGravity : public ForceModel {
   // Metal only: groups per threadgroup for the SIMD tree kernel, 0 for the
   // threadgroup-tiled kernel (see metal::Context::set_tree_simds).
   void set_metal_simds(unsigned simds);
+  // Metal only, diagnostic: see metal::Context::set_dispatch_repeats.
+  void set_metal_dispatch_repeats(unsigned repeats);
 
  private:
   GravityParams gp_;

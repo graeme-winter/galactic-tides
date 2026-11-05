@@ -31,6 +31,7 @@ void Context::tree(const gpu_vector<kern::float4> &, const gpu_vector<kern::GTCe
                    const gpu_vector<kern::GTGroup> &, const kern::GTParams &, unsigned,
                    gpu_vector<kern::float4> &) {}
 void Context::set_tree_simds(unsigned) {}
+void Context::set_dispatch_repeats(unsigned) {}
 const char *Context::last_tree_kernel() const { return ""; }
 double Context::last_gpu_seconds() const { return 0.0; }
 bool Context::last_zero_copy() const { return false; }
