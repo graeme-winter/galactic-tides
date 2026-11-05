@@ -45,6 +45,29 @@ For an encounter between two galaxies on a parabolic orbit:
 python3 ../scripts/plot_snapshot.py frames encounter/snap_*.hdf5 --extent 40 --vmax 0.05
 ```
 
+## Watching a run in 3D
+
+`viewer/galactic_tides_viewer.html` is a self-contained WebGL page (no build step,
+no dependencies) for playing a run back: step or scrub through snapshots,
+play at a chosen speed with interpolation between snapshots, orbit, zoom and
+pan, jump to face-on or edge-on, and toggle halo, disk and bulge.
+
+```sh
+python3 ../scripts/export_viewer.py galaxy/snap_*.hdf5 -o galaxy.gtv
+open ../viewer/galactic_tides_viewer.html          # then drop galaxy.gtv on it
+
+# or a single shareable page with the run embedded (opens fine on a phone)
+python3 ../scripts/export_viewer.py encounter/snap_*.hdf5 --every 2 --html encounter.html
+```
+
+Particles are matched across snapshots by ID. The halo is subsampled to 20%
+by default (`--fraction halo=0.5` to change it) and positions are stored as
+16 bit integers, so 10k particles over 100 snapshots is about 6 MB.
+
+Keys: space plays and pauses, ← and → step, Home and End jump, F face-on,
+E edge-on, R resets the view. Drag rotates, scroll or pinch zooms, shift-drag
+or two fingers pan.
+
 ## Units
 
 G = 1, disk mass = 1, disk scale length = 1. Scaled to the Milky Way
@@ -122,7 +145,9 @@ include/galactic_tides/   vec3, particles, params, octree, gravity, integrator,
 src/                 implementations
 apps/                galactic-tides-ics, galactic-tides-run
 tests/               self-contained tests (ctest)
-scripts/             plot_snapshot.py (image / profiles / frames)
+scripts/             plot_snapshot.py (image / profiles / frames),
+                     export_viewer.py (pack snapshots for the viewer)
+viewer/              galactic_tides_viewer.html (WebGL playback)
 examples/            parameter files
 ```
 
@@ -137,6 +162,11 @@ examples/            parameter files
   particles into sinks (`ParticleType::Sink`) is another.
 * **Timesteps.** Individual (block) timesteps would help the centre a lot.
 * **Softening.** Spline softening (Monaghan & Lattanzio) in place of Plummer.
+* **GPU.** On Apple Silicon a Metal compute kernel could take the force
+  calculation: brute-force O(N²) tiles for N up to ~10⁵, or a CPU-built tree
+  with interaction lists walked on the GPU for more. Unified memory means no
+  copying, and single precision forces are fine with cell-relative
+  coordinates.
 * **Better ICs.** Distribution-function based models (Kuijken & Dubinski 1995;
   AGAMA) for comparison with the moment-based ones.
 

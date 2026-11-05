@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>galactic-tides viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --space: #000000;
+    --panel: rgba(243, 245, 250, 0.92);
+    --panel-solid: #f3f5fa;
+    --ink: #1b2233;
+    --muted: #586277;
+    --line: rgba(27, 34, 51, 0.16);
+    --accent: #2f5bb7;
+    --accent-ink: #ffffff;
+    --track: rgba(27, 34, 51, 0.18);
+    color-scheme: light;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --panel: rgba(15, 19, 31, 0.82);
+      --panel-solid: #0f131f;
+      --ink: #e7ecf6;
+      --muted: #9aa4ba;
+      --line: rgba(231, 236, 246, 0.14);
+      --accent: #a9c8ff;
+      --accent-ink: #0b1630;
+      --track: rgba(231, 236, 246, 0.2);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --panel: rgba(15, 19, 31, 0.82);
+    --panel-solid: #0f131f;
+    --ink: #e7ecf6;
+    --muted: #9aa4ba;
+    --line: rgba(231, 236, 246, 0.14);
+    --accent: #a9c8ff;
+    --accent-ink: #0b1630;
+    --track: rgba(231, 236, 246, 0.2);
+    color-scheme: dark;
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  html { height: 100%; scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--space);
+    color: var(--ink);
+    font-family: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.35;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0 0 auto;
+    height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--space);
+  }
+  canvas#sky {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    display: block; touch-action: none; cursor: grab;
+  }
+  canvas#sky.dragging { cursor: grabbing; }
+
+  .panel {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+  button, select {
+    font: inherit; color: inherit; background: transparent;
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 10px; min-height: 34px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  button[aria-pressed="true"] { border-color: var(--accent); }
+  button[aria-pressed="false"] { color: var(--muted); }
+  button[aria-pressed="false"] .swatch { opacity: 0.25; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  /* top: run identity on the left, viewpoints on the right */
+  #top {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 5;
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+    padding: calc(env(safe-area-inset-top, 0px) + 12px) 12px 0;
+    pointer-events: none;
+  }
+  #top > * { pointer-events: auto; }
+  #identity { padding: 8px 12px; max-width: min(60vw, 420px); }
+  #identity h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+  #identity p { margin: 2px 0 0; color: var(--muted); font-size: 13.5px; }
+  #views { display: flex; gap: 6px; padding: 6px; }
+
+  /* bottom: transport and display */
+  #bottom {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+    padding: 0 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
+  }
+  #controls { padding: 10px 12px; display: grid; gap: 10px; max-width: 980px; margin: 0 auto; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #transport button { min-width: 40px; padding: 5px 8px; }
+  #scrub { flex: 1 1 200px; min-width: 120px; }
+  #readout { font-variant-numeric: tabular-nums; min-width: 9.5em; text-align: right; white-space: nowrap; }
+  #readout strong { font-size: 19px; font-weight: 600; }
+  #readout span { color: var(--muted); margin-left: 6px; }
+  #display { justify-content: space-between; }
+  #groups { display: flex; gap: 6px; flex-wrap: wrap; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+  .count { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+  label.slider { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  label.slider input { width: 96px; }
+  input[type="range"] { accent-color: var(--accent); height: 28px; margin: 0; }
+  #toggle-display { display: none; }
+
+  @media (max-width: 640px) {
+    #views button { padding: 5px 8px; }
+    #identity { max-width: 46vw; }
+    #identity p { display: none; }
+    #identity h1 { font-size: 17px; }
+    #toggle-display { display: inline-block; }
+    #display { display: none; }
+    #controls.show-display #display { display: flex; }
+    label.slider input { width: 80px; }
+    #readout { min-width: 0; }
+  }
+
+  /* empty and error states */
+  #welcome {
+    position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; z-index: 6;
+  }
+  #welcome .panel { padding: 22px 24px; max-width: 460px; }
+  #welcome h2 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+  #welcome p { margin: 0 0 14px; color: var(--muted); }
+  #welcome code { font-size: 13px; color: var(--ink); }
+  #welcome.hidden, .hidden { display: none !important; }
+  body.drop-target canvas#sky { outline: 2px dashed var(--accent); outline-offset: -8px; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<canvas id="sky" aria-label="3D view of the simulation particles"></canvas>
+
+<div id="top">
+  <div id="identity" class="panel hidden">
+    <h1 id="title">Run</h1>
+    <p id="summary"></p>
+    <p class="hint">Drag to rotate, scroll or pinch to zoom, shift‑drag or two fingers to pan</p>
+  </div>
+  <div id="views" class="panel hidden" role="group" aria-label="Viewpoint">
+    <button id="face-on" title="Look down the z axis (F)">Face‑on</button>
+    <button id="edge-on" title="Look along the disk plane (E)">Edge‑on</button>
+    <button id="reset" title="Back to the starting view (R)">Reset</button>
+  </div>
+</div>
+
+<div id="bottom" class="hidden">
+  <div id="controls" class="panel">
+    <div class="row" id="transport">
+      <button id="prev" title="Previous snapshot (←)" aria-label="Previous snapshot">◀︎</button>
+      <button id="play" class="primary" title="Play or pause (space)" aria-label="Play">Play</button>
+      <button id="next" title="Next snapshot (→)" aria-label="Next snapshot">▶︎</button>
+      <input id="scrub" type="range" min="0" max="0" step="any" value="0" aria-label="Time">
+      <div id="readout" aria-live="off"><strong id="t-code">t 0.0</strong><span id="t-myr"></span></div>
+      <button id="toggle-display" aria-expanded="false">Display</button>
+    </div>
+    <div class="row" id="display">
+      <div id="groups" role="group" aria-label="Particle types"></div>
+      <div class="row">
+        <label class="slider">Size <input id="size" type="range" min="0.5" max="10" step="0.1" value="3"></label>
+        <label class="slider">Brightness <input id="bright" type="range" min="-2" max="2" step="0.05" value="0"></label>
+        <label class="slider">Speed
+          <select id="speed" aria-label="Playback speed">
+            <option value="2">2 fps</option><option value="5">5 fps</option>
+            <option value="10" selected>10 fps</option><option value="20">20 fps</option>
+            <option value="40">40 fps</option>
+          </select>
+        </label>
+        <button id="smooth" aria-pressed="true" title="Interpolate between snapshots">Smooth</button>
+        <button id="open" title="Open a .gtv file">Open run</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="welcome">
+  <div class="panel">
+    <h2>Drop a run here</h2>
+    <p id="welcome-text">Export snapshots with
+      <code>scripts/export_viewer.py output/snap_*.hdf5 -o run.gtv</code>,
+      then drop the file on this page or open it.</p>
+    <button id="open-welcome" class="primary">Open run</button>
+  </div>
+</div>
+<input id="file" type="file" accept=".gtv,application/octet-stream" class="hidden">
+
+<!-- export_viewer.py --html puts a base64 run in here -->
+<script id="gtv-embedded" type="application/octet-stream"></script>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- colours
+const GROUP_STYLE = {
+  halo:  { color: [0.55, 0.50, 0.78], intensity: 0.10, label: "Halo" },
+  disk:  { color: [0.66, 0.78, 1.00], intensity: 0.55, label: "Disk" },
+  bulge: { color: [1.00, 0.79, 0.47], intensity: 0.55, label: "Bulge" },
+  gas:   { color: [0.50, 0.88, 0.82], intensity: 0.45, label: "Gas" },
+  stars: { color: [1.00, 1.00, 1.00], intensity: 0.60, label: "Stars" },
+  sink:  { color: [1.00, 0.42, 0.42], intensity: 1.00, label: "Sinks" },
+};
+
+// ---------------------------------------------------------------- matrices
+function perspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  return new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1,
+                           0, 0, 2 * far * near * nf, 0]);
+}
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function normalise(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+function lookAt(eye, centre, up) {
+  const z = normalise(sub(eye, centre)), x = normalise(cross(up, z)), y = cross(z, x);
+  return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0,
+                           -dot(x, eye), -dot(y, eye), -dot(z, eye), 1]);
+}
+
+// ---------------------------------------------------------------- WebGL
+const canvas = document.getElementById("sky");
+const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, premultipliedAlpha: false });
+
+const VS = `#version 300 es
+in vec3 aPosA;
+in vec3 aPosB;
+in float aGroup;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform float uExtent;
+uniform float uMix;
+uniform float uSizeRef;
+uniform float uMaxSize;
+uniform vec3 uColor[6];
+uniform float uVisible[6];
+out vec3 vColor;
+void main() {
+  int g = int(aGroup + 0.5);
+  if (aPosA.x <= -0.99999 || aPosB.x <= -0.99999 || uVisible[g] < 0.5) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    gl_PointSize = 0.0;
+    vColor = vec3(0.0);
+    return;
+  }
+  vec4 vp = uView * vec4(mix(aPosA, aPosB, uMix) * uExtent, 1.0);
+  gl_Position = uProj * vp;
+  float size = uSizeRef / max(-vp.z, 1e-4);
+  // Below a pixel, keep the point at one pixel but dim it so that zooming
+  // out does not brighten the image.
+  float px = clamp(size, 1.0, uMaxSize);
+  vColor = uColor[g] * min(1.0, size * size);
+  gl_PointSize = px;
+}`;
+
+const FS = `#version 300 es
+precision mediump float;
+in vec3 vColor;
+out vec4 outColor;
+void main() {
+  vec2 c = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(c, c);
+  if (r2 > 1.0) discard;
+  outColor = vec4(vColor * exp(-3.5 * r2), 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+let prog, loc, bufA, bufB, bufGroup, vao, maxPoint = 64;
+function initGL() {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.bindAttribLocation(prog, 0, "aPosA");
+  gl.bindAttribLocation(prog, 1, "aPosB");
+  gl.bindAttribLocation(prog, 2, "aGroup");
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  loc = {};
+  for (const u of ["uView", "uProj", "uExtent", "uMix", "uSizeRef", "uMaxSize"])
+    loc[u] = gl.getUniformLocation(prog, u);
+  loc.uColor = gl.getUniformLocation(prog, "uColor[0]");
+  loc.uVisible = gl.getUniformLocation(prog, "uVisible[0]");
+  maxPoint = Math.min(64, gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1]);
+  vao = gl.createVertexArray();
+  bufA = gl.createBuffer();
+  bufB = gl.createBuffer();
+  bufGroup = gl.createBuffer();
+}
+
+// ---------------------------------------------------------------- state
+const state = {
+  run: null,          // { header, data: Int16Array, groupOf: Uint8Array }
+  frame: 0,           // fractional snapshot index
+  playing: false,
+  smooth: true,
+  fps: 10,
+  sizePx: 3,
+  brightness: 1,
+  visible: [],        // per group
+  loadedPair: [-1, -1],
+  cam: { yaw: -1.0, pitch: 0.5, dist: 30, target: [0, 0, 0] },
+  home: null,
+  refDist: 30,
+  dirty: true,
+  autoGain: 1,
+};
+const FOV = 45 * Math.PI / 180;
+
+function parseRun(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+  if (magic !== "GTV1") throw new Error("This file is not a galactic-tides viewer export (missing GTV1 header).");
+  const hlen = new DataView(buffer).getUint32(4, true);
+  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + hlen)));
+  const offset = 8 + hlen;
+  const expected = header.n_frames * header.n_particles * 3;
+  if ((buffer.byteLength - offset) / 2 < expected)
+    throw new Error("The file is truncated: expected " + expected + " values.");
+  const data = new Int16Array(buffer, offset, expected);
+  const groupOf = new Uint8Array(header.n_particles);
+  header.groups.forEach((g, k) => groupOf.fill(k, g.offset, g.offset + g.count));
+  return { header, data, groupOf };
+}
+
+function frameSlice(k) {
+  const n = state.run.header.n_particles * 3;
+  return state.run.data.subarray(k * n, (k + 1) * n);
+}
+
+// Radius containing most of the stars in the first frame: frames the galaxy.
+function homeView(run) {
+  const h = run.header, d = run.data, s = h.extent / 32767;
+  const radii = [];
+  h.groups.forEach((g) => {
+    if (g.name === "halo") return;
+    for (let i = g.offset; i < g.offset + g.count; i += Math.max(1, Math.floor(g.count / 4000))) {
+      if (d[3 * i] === -32768) continue;
+      radii.push(Math.hypot(d[3 * i], d[3 * i + 1], d[3 * i + 2]) * s);
+    }
+  });
+  if (!radii.length) radii.push(h.extent * 0.5);
+  radii.sort((a, b) => a - b);
+  const r = radii[Math.floor(0.95 * (radii.length - 1))];
+  const dist = Math.max(r, 1e-6) / Math.tan(FOV / 2) * 1.25;
+  return { yaw: -Math.PI / 3, pitch: 0.5, dist, target: [0, 0, 0] };
+}
+
+function loadRun(run) {
+  state.run = run;
+  const h = run.header;
+  state.visible = h.groups.map(() => true);
+  state.home = homeView(run);
+  state.cam = structuredClone(state.home);
+  state.refDist = state.home.dist;
+  state.frame = 0;
+  state.loadedPair = [-1, -1];
+  state.playing = false;
+  // Keep the overall image brightness similar whatever the particle count.
+  let weighted = 0;
+  h.groups.forEach((g) => { weighted += g.count * (GROUP_STYLE[g.name] || GROUP_STYLE.stars).intensity; });
+  state.autoGain = Math.min(3, Math.max(0.05, Math.sqrt(5000 / Math.max(weighted, 1))));
+
+  gl.bindVertexArray(vao);
+  const bytes = h.n_particles * 3 * 2;
+  for (const [buf, idx] of [[bufA, 0], [bufB, 1]]) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, bytes, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(idx);
+    gl.vertexAttribPointer(idx, 3, gl.SHORT, true, 0, 0);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufGroup);
+  gl.bufferData(gl.ARRAY_BUFFER, run.groupOf, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  buildUI();
+  state.dirty = true;
+}
+
+// ---------------------------------------------------------------- UI
+const $ = (id) => document.getElementById(id);
+const fmt = new Intl.NumberFormat("en");
+
+function buildUI() {
+  const h = state.run.header;
+  $("welcome").classList.add("hidden");
+  for (const id of ["identity", "views", "bottom"]) $(id).classList.remove("hidden");
+  $("title").textContent = h.title || "Run";
+  const shown = h.groups.reduce((a, g) => a + g.count, 0);
+  const total = h.groups.reduce((a, g) => a + (g.represents || g.count), 0);
+  const t0 = h.times[0], t1 = h.times[h.times.length - 1];
+  $("summary").textContent = h.n_frames + " snapshots, t " + t0.toFixed(1) + " to " + t1.toFixed(1) +
+    ", " + fmt.format(shown) + " of " + fmt.format(total) + " particles shown";
+  document.title = (h.title || "Run") + " – galactic-tides viewer";
+
+  const groups = $("groups");
+  groups.replaceChildren();
+  h.groups.forEach((g, k) => {
+    const st = GROUP_STYLE[g.name] || GROUP_STYLE.stars;
+    const b = document.createElement("button");
+    b.setAttribute("aria-pressed", "true");
+    const rgb = st.color.map((c) => Math.round(c * 255)).join(",");
+    b.innerHTML = '<span class="swatch" style="background: rgb(' + rgb + ')"></span>' + st.label +
+      '<span class="count">' + fmt.format(g.count) + "</span>";
+    if (g.represents && g.represents !== g.count)
+      b.title = "Showing " + fmt.format(g.count) + " of " + fmt.format(g.represents) + " " + g.name + " particles";
+    b.addEventListener("click", () => {
+      state.visible[k] = !state.visible[k];
+      b.setAttribute("aria-pressed", String(state.visible[k]));
+      state.dirty = true;
+    });
+    groups.appendChild(b);
+  });
+
+  const scrub = $("scrub");
+  scrub.max = String(Math.max(0, h.n_frames - 1));
+  scrub.step = state.smooth ? "any" : "1";
+  for (const id of ["play", "prev", "next", "scrub"]) $(id).disabled = h.n_frames < 2;
+  updateReadout();
+}
+
+function setPlaying(p) {
+  state.playing = p && state.run && state.run.header.n_frames > 1;
+  const b = $("play");
+  b.textContent = state.playing ? "Pause" : "Play";
+  b.setAttribute("aria-label", state.playing ? "Pause" : "Play");
+}
+
+function setFrame(f) {
+  const n = state.run.header.n_frames;
+  state.frame = Math.min(Math.max(f, 0), n - 1);
+  state.dirty = true;
+  updateReadout();
+}
+
+function currentTime() {
+  const times = state.run.header.times;
+  const i = Math.floor(state.frame), j = Math.min(i + 1, times.length - 1);
+  const f = state.smooth ? state.frame - i : 0;
+  return times[i] * (1 - f) + times[j] * f;
+}
+
+function updateReadout() {
+  if (!state.run) return;
+  const t = currentTime();
+  $("t-code").textContent = "t " + t.toFixed(t < 100 ? 2 : 1);
+  const unit = state.run.header.time_unit_myr;
+  $("t-myr").textContent = unit ? Math.round(t * unit) + " Myr" : "";
+  const scrub = $("scrub");
+  if (document.activeElement !== scrub || state.playing) scrub.value = String(state.frame);
+}
+
+function setView(kind) {
+  const c = state.cam;
+  if (kind === "face") { c.pitch = Math.PI / 2 - 1e-3; }
+  else if (kind === "edge") { c.pitch = 0; }
+  else { Object.assign(c, structuredClone(state.home)); }
+  state.dirty = true;
+}
+
+$("play").addEventListener("click", () => setPlaying(!state.playing));
+$("prev").addEventListener("click", () => { setPlaying(false); setFrame(Math.ceil(state.frame) - 1); });
+$("next").addEventListener("click", () => { setPlaying(false); setFrame(Math.floor(state.frame) + 1); });
+$("scrub").addEventListener("input", (e) => { setPlaying(false); setFrame(parseFloat(e.target.value)); });
+$("face-on").addEventListener("click", () => setView("face"));
+$("edge-on").addEventListener("click", () => setView("edge"));
+$("reset").addEventListener("click", () => setView("home"));
+$("size").addEventListener("input", (e) => { state.sizePx = parseFloat(e.target.value); state.dirty = true; });
+$("bright").addEventListener("input", (e) => { state.brightness = Math.pow(10, parseFloat(e.target.value)); state.dirty = true; });
+$("speed").addEventListener("change", (e) => { state.fps = parseFloat(e.target.value); });
+$("smooth").addEventListener("click", (e) => {
+  state.smooth = !state.smooth;
+  e.currentTarget.setAttribute("aria-pressed", String(state.smooth));
+  $("scrub").step = state.smooth ? "any" : "1";
+  if (!state.smooth) setFrame(Math.round(state.frame));
+  state.dirty = true;
+});
+$("toggle-display").addEventListener("click", (e) => {
+  const open = $("controls").classList.toggle("show-display");
+  e.currentTarget.setAttribute("aria-expanded", String(open));
+});
+
+document.addEventListener("keydown", (e) => {
+  if (!state.run || e.target.tagName === "SELECT") return;
+  const inRange = e.target.type === "range";
+  if (e.key === " ") { e.preventDefault(); setPlaying(!state.playing); }
+  else if (e.key === "ArrowLeft" && !inRange) { setPlaying(false); setFrame(Math.ceil(state.frame) - 1); }
+  else if (e.key === "ArrowRight" && !inRange) { setPlaying(false); setFrame(Math.floor(state.frame) + 1); }
+  else if (e.key === "Home") { setFrame(0); }
+  else if (e.key === "End") { setFrame(state.run.header.n_frames - 1); }
+  else if (e.key === "f" || e.key === "F") setView("face");
+  else if (e.key === "e" || e.key === "E") setView("edge");
+  else if (e.key === "r" || e.key === "R") setView("home");
+});
+
+// ---------------------------------------------------------------- camera input
+const pointers = new Map();
+let gesture = null;
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  canvas.classList.add("dragging");
+  gesture = null;
+});
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (!pointers.size) canvas.classList.remove("dragging");
+  gesture = null;
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+
+function pan(dxPx, dyPx) {
+  const c = state.cam;
+  const worldPerPx = 2 * c.dist * Math.tan(FOV / 2) / canvas.clientHeight;
+  const v = viewMatrix();
+  const right = [v[0], v[4], v[8]], up = [v[1], v[5], v[9]];
+  for (let k = 0; k < 3; k++) c.target[k] += (-dxPx * right[k] + dyPx * up[k]) * worldPerPx;
+}
+
+canvas.addEventListener("pointermove", (e) => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  const c = state.cam;
+  if (pointers.size === 1) {
+    if (e.shiftKey || (e.buttons & 2) || (e.buttons & 4)) pan(dx, dy);
+    else {
+      c.yaw -= dx * 0.006;
+      c.pitch = Math.min(Math.PI / 2 - 1e-3, Math.max(-Math.PI / 2 + 1e-3, c.pitch + dy * 0.006));
+    }
+  } else if (pointers.size === 2) {
+    const pts = [...pointers.values()];
+    const before = { d: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+                     mx: (pts[0].x + pts[1].x) / 2, my: (pts[0].y + pts[1].y) / 2 };
+    p.x = e.clientX; p.y = e.clientY;
+    const now = [...pointers.values()];
+    const d = Math.hypot(now[0].x - now[1].x, now[0].y - now[1].y);
+    const mx = (now[0].x + now[1].x) / 2, my = (now[0].y + now[1].y) / 2;
+    if (before.d > 0 && d > 0) c.dist *= before.d / d;
+    pan(mx - before.mx, my - before.my);
+    state.dirty = true;
+    return;
+  }
+  p.x = e.clientX; p.y = e.clientY;
+  state.dirty = true;
+});
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  state.cam.dist *= Math.exp(e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015));
+  state.dirty = true;
+}, { passive: false });
+
+// ---------------------------------------------------------------- loading
+function showError(msg) {
+  $("welcome").classList.remove("hidden");
+  $("welcome").querySelector("h2").textContent = "Could not open that run";
+  $("welcome-text").textContent = msg;
+}
+async function openFile(file) {
+  try {
+    loadRun(parseRun(await file.arrayBuffer()));
+    $("welcome").classList.add("hidden");
+  } catch (err) {
+    showError(err.message);
+  }
+}
+for (const id of ["open", "open-welcome"]) $(id).addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", (e) => { if (e.target.files[0]) openFile(e.target.files[0]); });
+window.addEventListener("dragover", (e) => { e.preventDefault(); document.body.classList.add("drop-target"); });
+window.addEventListener("dragleave", () => document.body.classList.remove("drop-target"));
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  document.body.classList.remove("drop-target");
+  if (e.dataTransfer.files[0]) openFile(e.dataTransfer.files[0]);
+});
+
+// ---------------------------------------------------------------- render loop
+function viewMatrix() {
+  const c = state.cam;
+  const eye = [c.target[0] + c.dist * Math.cos(c.pitch) * Math.cos(c.yaw),
+               c.target[1] + c.dist * Math.cos(c.pitch) * Math.sin(c.yaw),
+               c.target[2] + c.dist * Math.sin(c.pitch)];
+  return lookAt(eye, c.target, [0, 0, 1]);
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    state.dirty = true;
+  }
+  return dpr;
+}
+
+function draw() {
+  const dpr = resize();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (!state.run) return;
+  const h = state.run.header;
+  const i = Math.floor(state.frame);
+  const j = state.smooth ? Math.min(i + 1, h.n_frames - 1) : i;
+  if (state.loadedPair[0] !== i || state.loadedPair[1] !== j) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufA);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, frameSlice(i));
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufB);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, frameSlice(j));
+    state.loadedPair = [i, j];
+  }
+  const c = state.cam;
+  const aspect = canvas.width / canvas.height;
+  const near = Math.max(c.dist * 0.005, 1e-6), far = c.dist * 10 + h.extent * 4;
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(loc.uView, false, viewMatrix());
+  gl.uniformMatrix4fv(loc.uProj, false, perspective(FOV, aspect, near, far));
+  gl.uniform1f(loc.uExtent, h.extent);
+  gl.uniform1f(loc.uMix, state.smooth ? state.frame - i : 0);
+  gl.uniform1f(loc.uSizeRef, state.sizePx * dpr * state.refDist);
+  gl.uniform1f(loc.uMaxSize, maxPoint);
+  const colors = new Float32Array(18), visible = new Float32Array(6);
+  h.groups.forEach((g, k) => {
+    const st = GROUP_STYLE[g.name] || GROUP_STYLE.stars;
+    const gain = st.intensity * state.brightness * state.autoGain;
+    for (let m = 0; m < 3; m++) colors[3 * k + m] = st.color[m] * gain;
+    visible[k] = state.visible[k] ? 1 : 0;
+  });
+  gl.uniform3fv(loc.uColor, colors);
+  gl.uniform1fv(loc.uVisible, visible);
+  gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.POINTS, 0, h.n_particles);
+  gl.bindVertexArray(null);
+}
+
+let last = performance.now();
+function tick(now) {
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  if (state.playing && state.run) {
+    const n = state.run.header.n_frames;
+    // Without smoothing the frame still advances continuously; it is drawn
+    // at its integer part.
+    let f = state.frame + dt * state.fps;
+    if (f > n - 1) f = 0;  // loop
+    state.frame = f;
+    state.dirty = true;
+    updateReadout();
+  }
+  if (state.dirty) {
+    state.dirty = false;
+    draw();
+  }
+  requestAnimationFrame(tick);
+}
+
+window.addEventListener("resize", () => { state.dirty = true; });
+
+// ---------------------------------------------------------------- start
+if (!gl) {
+  showError("This browser does not support WebGL2, which the viewer needs.");
+} else {
+  initGL();
+  const embedded = $("gtv-embedded").textContent.trim();
+  if (embedded) {
+    try {
+      const bin = atob(embedded);
+      const buf = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) buf[k] = bin.charCodeAt(k);
+      loadRun(parseRun(buf.buffer));
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+</script>
+</body>
+</html>
