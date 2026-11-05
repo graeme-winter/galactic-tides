@@ -145,9 +145,12 @@ int main(int argc, char **argv) {
       std::printf("%-14s %10.2f %12.0f %12.2e %12.2e", name.c_str(), best * 1e3,
                   double(st.cell_interactions + st.particle_interactions) / double(p.size()),
                   err[err.size() / 2], err[err.size() * 99 / 100]);
-      if (group)
+      if (group) {
         std::printf("   tree %.1f, lists %.1f, evaluate %.1f", tm.tree * 1e3, tm.lists * 1e3,
                     tm.evaluate * 1e3);
+        if (name == "group-metal")
+          std::printf(" (gpu %.1f%s)", tm.gpu * 1e3, tm.zero_copy ? ", zero-copy" : ", copied");
+      }
       std::printf("\n");
     }
   } catch (const std::exception &e) {

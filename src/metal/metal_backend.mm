@@ -1,12 +1,14 @@
 // Metal host code (Objective-C++, compiled with ARC). Kept deliberately
-// small: upload arrays, dispatch, wait, download. All arithmetic is in
+// small: bind arrays, dispatch, wait. All arithmetic is in
 // include/galactic_tides/kernels/gravity_kernels.h, which the tests also run on
-// the CPU.
+// the CPU, and the kernel wrappers in gravity_kernels.metal are compiled and
+// run as C++ by test_metal_mock.
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -31,6 +33,17 @@ std::string describe(NSError *err) {
   return std::string([[err localizedDescription] UTF8String]);
 }
 
+// One kernel argument backed by a host array. Page-aligned arrays
+// (gpu_vector) are wrapped in place with newBufferWithBytesNoCopy, and the
+// wrapper is reused while the array keeps its storage; anything else falls
+// back to a private shared buffer and a copy.
+struct Binding {
+  const void *wrapped = nullptr;  // host storage the buffer wraps, if no-copy
+  size_t wrapped_bytes = 0;
+  bool no_copy = false;
+  id<MTLBuffer> buf = nil;
+};
+
 }  // namespace
 
 struct Context::Impl {
@@ -38,32 +51,71 @@ struct Context::Impl {
   id<MTLCommandQueue> queue = nil;
   id<MTLComputePipelineState> direct = nil;
   id<MTLComputePipelineState> tree = nil;
-  id<MTLBuffer> bodies = nil;
-  id<MTLBuffer> cells = nil;
-  id<MTLBuffer> cell_list = nil;
-  id<MTLBuffer> leaf_list = nil;
-  id<MTLBuffer> groups = nil;
-  id<MTLBuffer> out = nil;
+  Binding bodies, cells, cell_list, leaf_list, groups, out;
+  bool allow_no_copy = true;  // switched off if Metal ever refuses to wrap
+  double gpu_seconds = 0.0;
+  bool zero_copy = false;
 
-  // Shared storage: on Apple Silicon the CPU and GPU see the same memory, so
-  // "uploading" is a memcpy into the buffer's contents.
-  void ensure(id<MTLBuffer> __strong &buf, size_t bytes) {
+  void own_buffer(Binding &b, size_t bytes) {
     bytes = std::max<size_t>(bytes, 16);
-    if (buf == nil || [buf length] < bytes) {
-      buf = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-      if (buf == nil) throw std::runtime_error("Metal: failed to allocate a buffer");
+    if (b.no_copy || b.buf == nil || [b.buf length] < bytes) {
+      b.buf = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+      if (b.buf == nil) throw std::runtime_error("Metal: failed to allocate a buffer");
     }
+    b.no_copy = false;
+    b.wrapped = nullptr;
+    b.wrapped_bytes = 0;
   }
-  void upload(id<MTLBuffer> __strong &buf, const void *data, size_t bytes) {
-    ensure(buf, bytes);
-    if (bytes) std::memcpy([buf contents], data, bytes);
+
+  // Try to make b wrap [ptr, ptr + alloc_bytes) without copying.
+  bool wrap(Binding &b, const void *ptr, size_t alloc_bytes) {
+    const size_t page = page_size();
+    if (!allow_no_copy || ptr == nullptr || alloc_bytes == 0 ||
+        reinterpret_cast<std::uintptr_t>(ptr) % page != 0 || alloc_bytes % page != 0)
+      return false;
+    if (b.no_copy && b.wrapped == ptr && b.wrapped_bytes == alloc_bytes) return true;
+    id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:const_cast<void *>(ptr)
+                                                  length:alloc_bytes
+                                                 options:MTLResourceStorageModeShared
+                                             deallocator:nil];
+    if (buf == nil) {
+      allow_no_copy = false;
+      return false;
+    }
+    b.buf = buf;
+    b.no_copy = true;
+    b.wrapped = ptr;
+    b.wrapped_bytes = alloc_bytes;
+    return true;
   }
-  // Commit, wait, and turn a GPU-side failure into a message.
+
+  template <class T>
+  void bind_input(Binding &b, const gpu_vector<T> &v) {
+    const size_t used = v.size() * sizeof(T);
+    if (wrap(b, v.data(), allocation_bytes(v))) return;
+    own_buffer(b, used);
+    if (used) std::memcpy([b.buf contents], v.data(), used);
+  }
+
+  // The output must already have its final size.
+  template <class T>
+  void bind_output(Binding &b, gpu_vector<T> &v) {
+    if (wrap(b, v.data(), allocation_bytes(v))) return;
+    own_buffer(b, v.size() * sizeof(T));
+  }
+
+  template <class T>
+  void collect_output(Binding &b, gpu_vector<T> &v) {
+    if (!b.no_copy && !v.empty()) std::memcpy(v.data(), [b.buf contents], v.size() * sizeof(T));
+  }
+
+  // Commit, wait, record GPU time, and turn a GPU-side failure into a message.
   std::string finish(id<MTLCommandBuffer> cb, const char *what) {
     [cb commit];
     [cb waitUntilCompleted];
     if ([cb status] == MTLCommandBufferStatusError)
       return std::string("Metal: ") + what + " failed: " + describe([cb error]);
+    gpu_seconds = [cb GPUEndTime] - [cb GPUStartTime];
     return {};
   }
 };
@@ -114,82 +166,91 @@ std::string Context::device_name() const {
   return name;
 }
 
-void Context::direct(const std::vector<kern::float4> &bodies, const kern::GTParams &p,
-                     std::vector<kern::float4> &out) {
+double Context::last_gpu_seconds() const { return impl_->gpu_seconds; }
+bool Context::last_zero_copy() const { return impl_->zero_copy; }
+
+void Context::direct(const gpu_vector<kern::float4> &bodies, const kern::GTParams &p,
+                     gpu_vector<kern::float4> &out) {
   const size_t n = bodies.size();
   out.resize(n);
+  impl_->gpu_seconds = 0.0;
   if (n == 0) return;
   std::string error;
   @autoreleasepool {
-   try {
-    Impl &m = *impl_;
-    m.upload(m.bodies, bodies.data(), n * sizeof(kern::float4));
-    m.ensure(m.out, n * sizeof(kern::float4));
-    // The kernel's tile holds 256 bodies, so threadgroups must not be larger.
-    const NSUInteger tg = std::min<NSUInteger>(256, [m.direct maxTotalThreadsPerThreadgroup]);
-    const NSUInteger groups = (n + tg - 1) / tg;
-    id<MTLCommandBuffer> cb = [m.queue commandBuffer];
-    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-    [enc setComputePipelineState:m.direct];
-    [enc setBuffer:m.bodies offset:0 atIndex:0];
-    [enc setBuffer:m.out offset:0 atIndex:1];
-    [enc setBytes:&p length:sizeof(p) atIndex:2];
-    [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1) threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
-    [enc endEncoding];
-    error = m.finish(cb, "direct kernel");
-    if (error.empty()) std::memcpy(out.data(), [m.out contents], n * sizeof(kern::float4));
-   } catch (const std::exception &e) {
-    error = e.what();  // rethrown outside the autorelease pool
-   }
+    try {
+      Impl &m = *impl_;
+      m.bind_input(m.bodies, bodies);
+      m.bind_output(m.out, out);
+      m.zero_copy = m.bodies.no_copy && m.out.no_copy;
+      // The kernel's tile holds 256 bodies, so threadgroups must not be larger.
+      const NSUInteger tg = std::min<NSUInteger>(256, [m.direct maxTotalThreadsPerThreadgroup]);
+      const NSUInteger groups = (n + tg - 1) / tg;
+      id<MTLCommandBuffer> cb = [m.queue commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+      [enc setComputePipelineState:m.direct];
+      [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
+      [enc setBuffer:m.out.buf offset:0 atIndex:1];
+      [enc setBytes:&p length:sizeof(p) atIndex:2];
+      [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+      [enc endEncoding];
+      error = m.finish(cb, "direct kernel");
+      if (error.empty()) m.collect_output(m.out, out);
+    } catch (const std::exception &e) {
+      error = e.what();  // rethrown outside the autorelease pool
+    }
   }
   if (!error.empty()) throw std::runtime_error(error);
 }
 
-void Context::tree(const std::vector<kern::float4> &bodies, const std::vector<kern::GTCell> &cells,
-                   const std::vector<kern::uint> &cell_list,
-                   const std::vector<kern::GTRange> &leaf_list,
-                   const std::vector<kern::GTGroup> &groups, const kern::GTParams &p,
-                   unsigned threads_per_group, std::vector<kern::float4> &out) {
+void Context::tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern::GTCell> &cells,
+                   const gpu_vector<kern::uint> &cell_list,
+                   const gpu_vector<kern::GTRange> &leaf_list,
+                   const gpu_vector<kern::GTGroup> &groups, const kern::GTParams &p,
+                   unsigned threads_per_group, gpu_vector<kern::float4> &out) {
   const size_t n = bodies.size();
   out.resize(n);
+  impl_->gpu_seconds = 0.0;
   if (n == 0 || groups.empty()) return;
   if (p.n != n || p.n_groups != groups.size())
     throw std::invalid_argument("Metal tree: parameters do not match the arrays");
   std::string error;
   @autoreleasepool {
-   try {
-    Impl &m = *impl_;
-    if (threads_per_group == 0 || threads_per_group > [m.tree maxTotalThreadsPerThreadgroup]) {
-      error = "Metal tree: " + std::to_string(threads_per_group) +
-              " threads per group is more than this GPU allows (" +
-              std::to_string((unsigned long)[m.tree maxTotalThreadsPerThreadgroup]) +
-              "); use a smaller group_size";
-    } else {
-      m.upload(m.bodies, bodies.data(), n * sizeof(kern::float4));
-      m.upload(m.cells, cells.data(), cells.size() * sizeof(kern::GTCell));
-      m.upload(m.cell_list, cell_list.data(), cell_list.size() * sizeof(kern::uint));
-      m.upload(m.leaf_list, leaf_list.data(), leaf_list.size() * sizeof(kern::GTRange));
-      m.upload(m.groups, groups.data(), groups.size() * sizeof(kern::GTGroup));
-      m.ensure(m.out, n * sizeof(kern::float4));
-      id<MTLCommandBuffer> cb = [m.queue commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-      [enc setComputePipelineState:m.tree];
-      [enc setBuffer:m.bodies offset:0 atIndex:0];
-      [enc setBuffer:m.cells offset:0 atIndex:1];
-      [enc setBuffer:m.cell_list offset:0 atIndex:2];
-      [enc setBuffer:m.leaf_list offset:0 atIndex:3];
-      [enc setBuffer:m.groups offset:0 atIndex:4];
-      [enc setBuffer:m.out offset:0 atIndex:5];
-      [enc setBytes:&p length:sizeof(p) atIndex:6];
-      [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
-      [enc endEncoding];
-      error = m.finish(cb, "tree kernel");
-      if (error.empty()) std::memcpy(out.data(), [m.out contents], n * sizeof(kern::float4));
+    try {
+      Impl &m = *impl_;
+      const NSUInteger limit = std::min<NSUInteger>(GT_TREE_TILE, [m.tree maxTotalThreadsPerThreadgroup]);
+      if (threads_per_group == 0 || threads_per_group > limit) {
+        error = "Metal tree: " + std::to_string(threads_per_group) +
+                " threads per group, but at most " + std::to_string((unsigned long)limit) +
+                " are possible here; use a smaller group_size";
+      } else {
+        m.bind_input(m.bodies, bodies);
+        m.bind_input(m.cells, cells);
+        m.bind_input(m.cell_list, cell_list);
+        m.bind_input(m.leaf_list, leaf_list);
+        m.bind_input(m.groups, groups);
+        m.bind_output(m.out, out);
+        m.zero_copy = m.bodies.no_copy && m.cells.no_copy && m.cell_list.no_copy &&
+                      m.leaf_list.no_copy && m.groups.no_copy && m.out.no_copy;
+        id<MTLCommandBuffer> cb = [m.queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:m.tree];
+        [enc setBuffer:m.bodies.buf offset:0 atIndex:0];
+        [enc setBuffer:m.cells.buf offset:0 atIndex:1];
+        [enc setBuffer:m.cell_list.buf offset:0 atIndex:2];
+        [enc setBuffer:m.leaf_list.buf offset:0 atIndex:3];
+        [enc setBuffer:m.groups.buf offset:0 atIndex:4];
+        [enc setBuffer:m.out.buf offset:0 atIndex:5];
+        [enc setBytes:&p length:sizeof(p) atIndex:6];
+        [enc dispatchThreadgroups:MTLSizeMake(groups.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
+        [enc endEncoding];
+        error = m.finish(cb, "tree kernel");
+        if (error.empty()) m.collect_output(m.out, out);
+      }
+    } catch (const std::exception &e) {
+      error = e.what();  // rethrown outside the autorelease pool
     }
-   } catch (const std::exception &e) {
-    error = e.what();  // rethrown outside the autorelease pool
-   }
   }
   if (!error.empty()) throw std::runtime_error(error);
 }

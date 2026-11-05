@@ -110,11 +110,29 @@ int main() {
                 << ": vs cpu kernel median " << same.median << " max " << same.max
                 << " | vs direct median " << acc.median << " max " << acc.max << "  (" << t * 1e3
                 << " ms: tree " << tm.tree * 1e3 << ", lists " << tm.lists * 1e3 << ", gpu "
-                << tm.evaluate * 1e3 << ")\n";
+                << tm.evaluate * 1e3 << " of which gpu " << tm.gpu * 1e3
+                << (tm.zero_copy ? ", zero-copy" : ", copied") << ")\n";
       CHECK(same.median < 1e-5);
       CHECK(same.max < 1e-3);
       CHECK(acc.median < 3e-3 * theta * theta);
     }
+  }
+  // The widest groups the tree kernel accepts, and one beyond: refused.
+  {
+    GravityParams g2 = gp;
+    Particles cpu = ref, gpu = ref;
+    GroupTreeGravity on_cpu(g2, Device::CPU, static_cast<int>(GT_TREE_TILE), 8, 1);
+    GroupTreeGravity on_gpu(g2, Device::Metal, static_cast<int>(GT_TREE_TILE), 8, 1);
+    on_cpu.compute(cpu);
+    on_gpu.compute(gpu);
+    CHECK(compare(gpu, cpu).max < 1e-3);
+    bool threw = false;
+    try {
+      GroupTreeGravity too_wide(g2, Device::Metal, static_cast<int>(GT_TREE_TILE) + 1);
+    } catch (const std::invalid_argument &) {
+      threw = true;
+    }
+    CHECK(threw);
   }
   return TEST_MAIN_RESULT();
 }

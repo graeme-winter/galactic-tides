@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "galactic_tides/kernels/gravity_kernels.h"
+#include "galactic_tides/page_allocator.h"
 
 namespace galactic_tides {
 namespace metal {
@@ -31,16 +32,22 @@ class Context {
   std::string device_name() const;
 
   // out[i] = (ax, ay, az, potential) for every body against every other.
-  void direct(const std::vector<kern::float4> &bodies, const kern::GTParams &p,
-              std::vector<kern::float4> &out);
+  void direct(const gpu_vector<kern::float4> &bodies, const kern::GTParams &p,
+              gpu_vector<kern::float4> &out);
 
   // Evaluates grouped interaction lists: out[i] for every body i in tree
   // order. p.n and p.n_groups must match the arrays; threads_per_group must
   // be at least the largest group.
-  void tree(const std::vector<kern::float4> &bodies, const std::vector<kern::GTCell> &cells,
-            const std::vector<kern::uint> &cell_list, const std::vector<kern::GTRange> &leaf_list,
-            const std::vector<kern::GTGroup> &groups, const kern::GTParams &p,
-            unsigned threads_per_group, std::vector<kern::float4> &out);
+  // threads_per_group may be at most GT_TREE_TILE.
+  void tree(const gpu_vector<kern::float4> &bodies, const gpu_vector<kern::GTCell> &cells,
+            const gpu_vector<kern::uint> &cell_list, const gpu_vector<kern::GTRange> &leaf_list,
+            const gpu_vector<kern::GTGroup> &groups, const kern::GTParams &p,
+            unsigned threads_per_group, gpu_vector<kern::float4> &out);
+
+  // Time the GPU spent on the last dispatch, from the command buffer.
+  double last_gpu_seconds() const;
+  // Whether the last dispatch used the arrays in place (no copies).
+  bool last_zero_copy() const;
 
  private:
   struct Impl;

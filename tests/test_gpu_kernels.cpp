@@ -182,7 +182,7 @@ int main() {
   gp.eps = 0.01;
   compute_gravity_direct(ref, gp);
 
-  std::vector<kern::float4> bodies;
+  gpu_vector<kern::float4> bodies;
   pack_bodies(ref.pos, ref.mass, Vec3(1.0, 1.0, 1.0), bodies);
   const kern::GTParams kp = make_kernel_params(gp, n);
   std::vector<double> err_a, err_p;
@@ -202,7 +202,7 @@ int main() {
 
   // A body never feels itself, and a lone body feels nothing.
   {
-    std::vector<kern::float4> one = {kern::float4{0.5f, 0.0f, 0.0f, 1.0f}};
+    gpu_vector<kern::float4> one = {kern::float4{0.5f, 0.0f, 0.0f, 1.0f}};
     kern::GTParams p1 = make_kernel_params(gp, 1);
     const kern::GTAcc a = kern::gt_direct_accel(0, one.data(), p1);
     CHECK(a.ax == 0.0f && a.pot == 0.0f);
@@ -250,6 +250,27 @@ int main() {
     }
   }
 
+  // ---- arrays the GPU wraps in place must be page aligned -----------------------
+  {
+    auto aligned = [](const void *ptr) {
+      return reinterpret_cast<std::uintptr_t>(ptr) % page_size() == 0;
+    };
+    gpu_vector<kern::float4> v(1001);
+    CHECK(aligned(v.data()));
+    CHECK(allocation_bytes(v) % page_size() == 0 && allocation_bytes(v) >= v.capacity() * 16);
+    Octree tree;
+    tree.build(ref.pos, ref.mass, 8);
+    GroupLists L;
+    build_group_lists(tree, gp, 32, L, true);
+    CHECK(aligned(L.bodies.data()) && aligned(L.cells.data()) && aligned(L.cell_list.data()) &&
+          aligned(L.leaf_list.data()) && aligned(L.groups.data()));
+    // Rebuilding with the same particles keeps the storage, so the GPU's
+    // wrappers can be reused from step to step.
+    const void *before = L.cell_list.data();
+    build_group_lists(tree, gp, 32, L, true);
+    CHECK(L.cell_list.data() == before);
+  }
+
   // ---- grouped tree: accuracy -------------------------------------------------
   // The group criterion is never looser than the per-particle one, so errors
   // should be no worse than the CPU tree's at the same opening angle (plus
@@ -283,7 +304,7 @@ int main() {
     grp.compute(q);
     kern::GTParams kp = make_kernel_params(g2, n);
     kp.n_groups = static_cast<kern::uint>(grp.lists().groups.size());
-    std::vector<kern::float4> out;
+    gpu_vector<kern::float4> out;
     evaluate_group_lists_cpu(grp.lists(), kp, out);
     const auto &order = grp.tree().order();
     int mismatches = 0;

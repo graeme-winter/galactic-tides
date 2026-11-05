@@ -19,12 +19,14 @@ Context::Context() {
 }
 Context::~Context() = default;
 std::string Context::device_name() const { return {}; }
-void Context::direct(const std::vector<kern::float4> &, const kern::GTParams &,
-                     std::vector<kern::float4> &) {}
-void Context::tree(const std::vector<kern::float4> &, const std::vector<kern::GTCell> &,
-                   const std::vector<kern::uint> &, const std::vector<kern::GTRange> &,
-                   const std::vector<kern::GTGroup> &, const kern::GTParams &, unsigned,
-                   std::vector<kern::float4> &) {}
+void Context::direct(const gpu_vector<kern::float4> &, const kern::GTParams &,
+                     gpu_vector<kern::float4> &) {}
+void Context::tree(const gpu_vector<kern::float4> &, const gpu_vector<kern::GTCell> &,
+                   const gpu_vector<kern::uint> &, const gpu_vector<kern::GTRange> &,
+                   const gpu_vector<kern::GTGroup> &, const kern::GTParams &, unsigned,
+                   gpu_vector<kern::float4> &) {}
+double Context::last_gpu_seconds() const { return 0.0; }
+bool Context::last_zero_copy() const { return false; }
 
 }  // namespace metal
 }  // namespace galactic_tides

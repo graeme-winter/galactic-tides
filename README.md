@@ -65,10 +65,16 @@ lanes are mostly busy.
 
 The tree and the lists are built on the CPU in double precision, then
 positions relative to the root cell are evaluated in single precision, which
-is ample for collisionless forces.
+is ample for collisionless forces. On the GPU each group's threads stage
+its cells through threadgroup memory a tile at a time, so the indirect cell
+loads happen in parallel rather than one after another. The lists live in
+page-aligned host arrays that Metal wraps in place (unified memory), so
+nothing is copied between the CPU and the GPU.
 
 `galactic-tides-bench n=200000` times the solvers on a Hernquist galaxy and
-checks them against double precision direct summation on a sample.
+checks them against double precision direct summation on a sample. For the
+GPU tree it also reports the time on the GPU itself (from the command
+buffer) and whether the arrays were used in place.
 
 **Building with Metal.** On macOS, Metal is on by default
 (`-DGALACTIC_TIDES_USE_METAL=OFF` to disable). Kernels are compiled at run time
@@ -88,8 +94,9 @@ of Metal and C++, so the CPU runs exactly what the GPU runs. On any platform:
 * `test_metal_mock` compiles `src/metal/gravity_kernels.metal` itself as C++
   against a mock `metal_stdlib`, and runs it with one CPU thread per GPU
   thread, real barriers and shared threadgroup memory. Its results must be
-  bit-identical to the CPU path. Removing a barrier or shifting an index
-  makes it fail.
+  bit-identical to the CPU path, and a thread that leaves a kernel while
+  others still have barriers to reach is reported. Removing a barrier,
+  shifting an index or letting idle threads exit early all make it fail.
 
 On a Mac, `test_metal` then runs the real kernels on the GPU against the CPU.
 What only a Mac can check is Metal-specific semantics (address spaces,

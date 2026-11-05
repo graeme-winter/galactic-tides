@@ -30,7 +30,7 @@ Particles make_system(std::size_t n, unsigned seed) {
   return p;
 }
 
-double max_rel(const std::vector<kern::float4> &a, const std::vector<kern::float4> &b) {
+double max_rel(const gpu_vector<kern::float4> &a, const gpu_vector<kern::float4> &b) {
   double worst = 0;
   for (std::size_t i = 0; i < a.size(); ++i) {
     const double d = std::hypot(a[i].x - b[i].x, a[i].y - b[i].y, a[i].z - b[i].z);
@@ -52,16 +52,16 @@ int main() {
   compute_gravity_direct(ref, gp);
 
   // ---- tiled brute force, several threadgroup sizes ---------------------------
-  std::vector<kern::float4> bodies;
+  gpu_vector<kern::float4> bodies;
   pack_bodies(ref.pos, ref.mass, Vec3(), bodies);
   const kern::GTParams kp = make_kernel_params(gp, n);
-  std::vector<kern::float4> emulated(n);
+  gpu_vector<kern::float4> emulated(n);
   for (kern::uint i = 0; i < n; ++i) {
     const kern::GTAcc a = kern::gt_direct_accel(i, bodies.data(), kp);
     emulated[i] = kern::float4{a.ax, a.ay, a.az, a.pot};
   }
   for (unsigned tg : {1u, 32u, 64u, 256u}) {
-    std::vector<kern::float4> out(n, kern::float4{NAN, NAN, NAN, NAN});
+    gpu_vector<kern::float4> out(n, kern::float4{NAN, NAN, NAN, NAN});
     mock::run_direct(bodies.data(), &kp, tg, out.data());
     const double d = max_rel(out, emulated);
     std::cout << "gt_direct, threadgroups of " << tg << ": max relative difference " << d
@@ -80,18 +80,23 @@ int main() {
       build_group_lists(tree, g2, gs, L, pack);
       kern::GTParams tp = make_kernel_params(g2, n);
       tp.n_groups = static_cast<kern::uint>(L.groups.size());
-      std::vector<kern::float4> cpu, gpu(n, kern::float4{NAN, NAN, NAN, NAN});
+      gpu_vector<kern::float4> cpu, gpu(n, kern::float4{NAN, NAN, NAN, NAN});
       evaluate_group_lists_cpu(L, tp, cpu);
-      // Threadgroups wider than the largest group, as the host would size
-      // them when rounding up, leave the extra threads idle.
-      const unsigned threads = static_cast<unsigned>(L.max_group) + 3;
-      mock::run_tree(L.bodies.data(), L.cells.data(), L.cell_list.data(), L.leaf_list.data(),
-                     L.groups.data(), &tp, threads, gpu.data());
-      const double d = max_rel(gpu, cpu);
-      std::cout << "gt_tree, groups of " << gs << (pack ? " packed" : "")
-                << ": max relative difference from the CPU evaluation " << d << "\n";
-      CHECK(d == 0.0);  // same code, same order: bit identical
+      // Exactly the largest group, wider (extra threads only help load the
+      // cell tiles), and the widest the kernel allows.
+      for (unsigned threads : {static_cast<unsigned>(L.max_group),
+                               static_cast<unsigned>(L.max_group) + 3, GT_TREE_TILE}) {
+        std::fill(gpu.begin(), gpu.end(), kern::float4{NAN, NAN, NAN, NAN});
+        mock::run_tree(L.bodies.data(), L.cells.data(), L.cell_list.data(), L.leaf_list.data(),
+                       L.groups.data(), &tp, threads, gpu.data());
+        const double d = max_rel(gpu, cpu);
+        std::cout << "gt_tree, groups of " << gs << (pack ? " packed" : "") << ", " << threads
+                  << " threads: max relative difference from the CPU evaluation " << d << "\n";
+        CHECK(d == 0.0);  // same arithmetic in the same order: bit identical
+      }
     }
   }
+  // Every thread of every threadgroup reached every barrier.
+  CHECK(!mock::barrier_violation());
   return TEST_MAIN_RESULT();
 }

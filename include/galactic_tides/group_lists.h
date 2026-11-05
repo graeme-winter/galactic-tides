@@ -19,16 +19,18 @@
 
 #include "galactic_tides/kernels/gravity_kernels.h"
 #include "galactic_tides/octree.h"
+#include "galactic_tides/page_allocator.h"
 
 namespace galactic_tides {
 
 struct GroupLists {
   Vec3 origin;                         // bodies and cells are relative to this
-  std::vector<kern::float4> bodies;    // tree order
-  std::vector<kern::GTCell> cells;     // one per tree node
-  std::vector<kern::uint> cell_list;   // node indices
-  std::vector<kern::GTRange> leaf_list;
-  std::vector<kern::GTGroup> groups;   // contiguous, in tree order
+  // Page-aligned so the GPU can use them in place.
+  gpu_vector<kern::float4> bodies;     // tree order
+  gpu_vector<kern::GTCell> cells;      // one per tree node
+  gpu_vector<kern::uint> cell_list;    // node indices
+  gpu_vector<kern::GTRange> leaf_list;
+  gpu_vector<kern::GTGroup> groups;    // contiguous, in tree order
   int max_group = 0;                   // largest group (threads per threadgroup)
   std::uint64_t cell_interactions = 0;  // summed over targets
   std::uint64_t body_interactions = 0;

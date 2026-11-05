@@ -25,7 +25,7 @@ const char *device_name(Device d);
 // layout every kernel reads. Working relative to the middle of the system
 // keeps single precision differences accurate.
 void pack_bodies(const std::vector<Vec3> &pos, const std::vector<double> &mass,
-                 const Vec3 &origin, std::vector<kern::float4> &out);
+                 const Vec3 &origin, gpu_vector<kern::float4> &out);
 kern::GTParams make_kernel_params(const GravityParams &gp, std::size_t n);
 
 // O(N^2) summation. On the CPU this is the double precision reference
@@ -41,7 +41,7 @@ class DirectGravity : public ForceModel {
   GravityParams gp_;
   Device device_;
   std::unique_ptr<metal::Context> ctx_;
-  std::vector<kern::float4> bodies_, out_;
+  gpu_vector<kern::float4> bodies_, out_;
   WalkStats stats_;
 };
 
@@ -53,6 +53,8 @@ class GroupTreeGravity : public ForceModel {
  public:
   struct Timings {
     double tree = 0, lists = 0, evaluate = 0;  // seconds, last compute()
+    double gpu = 0;          // of evaluate: time on the GPU itself (Metal only)
+    bool zero_copy = false;  // Metal used the arrays in place
   };
   // pack < 0 means the device's default: packed groups on Metal (fills the
   // SIMD lanes), unpacked on the CPU (shorter lists, no lanes to fill).
@@ -72,7 +74,7 @@ class GroupTreeGravity : public ForceModel {
   bool pack_;
   Octree tree_;
   GroupLists lists_;
-  std::vector<kern::float4> out_;
+  gpu_vector<kern::float4> out_;
   std::unique_ptr<metal::Context> ctx_;
   Timings timings_;
 };
@@ -80,7 +82,7 @@ class GroupTreeGravity : public ForceModel {
 // Evaluate grouped lists on the CPU with the shared kernels: out[i] in tree
 // order. Exposed for tests.
 void evaluate_group_lists_cpu(const GroupLists &lists, const kern::GTParams &p,
-                              std::vector<kern::float4> &out);
+                              gpu_vector<kern::float4> &out);
 
 // Builds the force model named by the parameters:
 //   gravity = tree (default) | group | direct

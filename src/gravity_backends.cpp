@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
+#include <string>
 
 #include "galactic_tides/gravity.h"
 #include "galactic_tides/metal_backend.h"
@@ -12,7 +13,7 @@ namespace galactic_tides {
 const char *device_name(Device d) { return d == Device::Metal ? "metal" : "cpu"; }
 
 void pack_bodies(const std::vector<Vec3> &pos, const std::vector<double> &mass,
-                 const Vec3 &origin, std::vector<kern::float4> &out) {
+                 const Vec3 &origin, gpu_vector<kern::float4> &out) {
   out.resize(pos.size());
   for (std::size_t i = 0; i < pos.size(); ++i) {
     const Vec3 d = pos[i] - origin;
@@ -67,7 +68,7 @@ void DirectGravity::compute(Particles &p) {
 }
 
 void evaluate_group_lists_cpu(const GroupLists &lists, const kern::GTParams &p,
-                              std::vector<kern::float4> &out) {
+                              gpu_vector<kern::float4> &out) {
   out.resize(lists.bodies.size());
   const long ng = static_cast<long>(lists.groups.size());
 #pragma omp parallel for schedule(dynamic, 8)
@@ -90,6 +91,9 @@ GroupTreeGravity::GroupTreeGravity(const GravityParams &gp, Device device, int g
       leaf_size_(leaf_size),
       pack_(pack < 0 ? device == Device::Metal : pack != 0) {
   if (group_size_ < 1) throw std::invalid_argument("group_size must be at least 1");
+  if (device_ == Device::Metal && group_size_ > static_cast<int>(GT_TREE_TILE))
+    throw std::invalid_argument("group_size can be at most " + std::to_string(GT_TREE_TILE) +
+                                " on Metal");
   if (device_ == Device::Metal) ctx_ = std::make_unique<metal::Context>();
 }
 
@@ -120,12 +124,16 @@ void GroupTreeGravity::compute(Particles &p) {
   else
     evaluate_group_lists_cpu(lists_, kp, out_);
   const auto t3 = clock::now();
+  timings_ = {secs(t0, t1), secs(t1, t2), secs(t2, t3), 0.0, false};
+  if (device_ == Device::Metal) {
+    timings_.gpu = ctx_->last_gpu_seconds();
+    timings_.zero_copy = ctx_->last_zero_copy();
+  }
   const auto &order = tree_.order();
   for (std::size_t k = 0; k < order.size(); ++k) {
     p.acc[order[k]] = Vec3(out_[k].x, out_[k].y, out_[k].z);
     p.pot[order[k]] = out_[k].w;
   }
-  timings_ = {secs(t0, t1), secs(t1, t2), secs(t2, t3)};
 }
 
 std::unique_ptr<ForceModel> make_gravity(const Params &params, const GravityParams &gp,
