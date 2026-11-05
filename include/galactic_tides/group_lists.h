@@ -33,6 +33,8 @@ struct GroupLists {
   gpu_vector<kern::uint> body_list;    // body indices (tree order)
   gpu_vector<kern::GTGroup> groups;    // contiguous, in tree order
   int max_group = 0;                   // largest group (threads per threadgroup)
+  std::uint64_t max_list = 0;          // longest list (cells + bodies): on a GPU
+                                       // one SIMD group walks it serially
   std::uint64_t cell_interactions = 0;  // summed over targets
   std::uint64_t body_interactions = 0;
 };
@@ -40,9 +42,10 @@ struct GroupLists {
 // Cells with at most this many bodies are listed as bodies when accepted.
 constexpr std::uint32_t kSmallCellAsBodies = 2;
 
-// With pack (the default), neighbouring small groups are merged, in tree
-// order, while they fit in group_size: the octree's natural groups are often
-// far from full, and on a GPU every unused thread in a SIMD group is wasted.
+// With pack (the default), consecutive small sibling nodes are merged while
+// they fit in group_size: the octree's natural groups are often far from
+// full, and on a GPU every unused thread in a SIMD group is wasted. Only
+// siblings are merged, so a group stays inside its parent's cube.
 void build_group_lists(const Octree &tree, const GravityParams &gp, int group_size,
                        GroupLists &out, bool pack = true);
 

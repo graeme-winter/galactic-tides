@@ -59,9 +59,13 @@ The grouped walk (Barnes 1990) does 10–30× fewer tree walks and gives every
 thread in a GPU SIMD group the same work. Its opening test is the
 per-particle one applied to the group's bounding box, so it is never less
 accurate; in practice it is about twice as accurate as `tree` at the same θ
-(more so in the tail), for about 50% more interactions. On the GPU, small neighbouring groups are
+(more so in the tail), for about 50% more interactions. On the GPU, small sibling groups are
 packed together (`group_pack`, on by default for Metal) so that the 32
-lanes are mostly busy.
+lanes are mostly busy. Only siblings are merged, so a packed group stays
+inside its parent cell: merging any neighbours in tree order once produced a
+group spanning the halo whose list held ~187,000 entries, and since each
+group's list is walked serially by one SIMD group, that single group set the
+GPU kernel's time.
 
 The tree and the lists are built on the CPU in double precision, then
 positions relative to the root cell are evaluated in single precision, which
@@ -70,17 +74,16 @@ group on one SIMD group and puts several groups in a threadgroup; the lanes
 fetch list entries in parallel and pass them round with `simd_shuffle`, with
 no threadgroup memory and no barriers. The other (`metal_simds = 0`, and any
 group bigger than 32) runs one group per threadgroup, staging entries
-through threadgroup memory. Measurements on an M4 Max showed the second
-kernel's time barely depended on the amount of work but did depend on the
-number of groups, so it is limited by how many groups each GPU core keeps in
-flight rather than by arithmetic or memory traffic. The lists live in
+through threadgroup memory; the SIMD kernel avoids its barriers and was
+about 30% faster on an M4 Max. The lists live in
 page-aligned host arrays that Metal wraps in place (unified memory), so
 nothing is copied between the CPU and the GPU.
 
 `galactic-tides-bench n=200000` times the solvers on a Hernquist galaxy and
 checks them against double precision direct summation on a sample. For the
 GPU tree it also reports the time on the GPU itself (from the command
-buffer), whether the arrays were used in place, the group fill and the GPU's
+buffer), whether the arrays were used in place, the group fill, the longest list
+relative to the mean (a long one sets the GPU time), and the GPU's
 interaction rate. `quadrupole=0` and `group_size=` help tell arithmetic
 limits from occupancy, `simds=` chooses the tree kernel, and
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <stdexcept>
 
 namespace galactic_tides {
@@ -36,6 +37,7 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
   out.cell_list.clear();
   out.body_list.clear();
   out.max_group = 0;
+  out.max_list = 0;
   out.cell_interactions = out.body_interactions = 0;
   out.bodies.resize(n);
   out.cells.resize(nodes.size());
@@ -59,34 +61,52 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
   // Choose groups: the highest nodes holding at most group_size bodies. A
   // leaf can hold more (coincident particles at maximum depth, or a leaf
   // size above the group size); such leaves are cut into chunks.
+  //
+  // With pack, consecutive small children of the same node are merged while
+  // they fit, so a packed group always lies inside its parent's cube.
+  // (Packing any neighbours in tree order is not safe: two nodes adjacent in
+  // tree order can be on opposite sides of the system, and a group spanning
+  // them opens most of the tree. On an M4 Max one such group, with a list of
+  // ~187000 entries, set the GPU kernel's time.)
   std::vector<GroupSpec> specs;
-  {
-    std::vector<std::size_t> stack{0};
-    while (!stack.empty()) {
-      const auto &nd = nodes[stack.back()];
-      stack.pop_back();
-      const std::uint32_t count = nd.end - nd.begin;
-      if (count <= static_cast<std::uint32_t>(group_size) || nd.is_leaf()) {
-        for (std::uint32_t b = nd.begin; b < nd.end; b += group_size)
-          specs.push_back({b, std::min<std::uint32_t>(nd.end, b + group_size)});
+  const std::uint32_t gs = static_cast<std::uint32_t>(group_size);
+  auto chunk = [&](std::uint32_t begin, std::uint32_t end) {
+    for (std::uint32_t c = begin; c < end; c += gs)
+      specs.push_back({c, std::min<std::uint32_t>(end, c + gs)});
+  };
+  // Depth first, children in order, so groups come out in tree order.
+  std::function<void(std::size_t)> visit = [&](std::size_t ni) {
+    const auto &nd = nodes[ni];
+    if (nd.end - nd.begin <= gs || nd.is_leaf()) {
+      chunk(nd.begin, nd.end);
+      return;
+    }
+    GroupSpec pending{0, 0};
+    bool have_pending = false;
+    auto flush = [&] {
+      if (have_pending) specs.push_back(pending);
+      have_pending = false;
+    };
+    for (int c = 0; c < nd.n_children; ++c) {
+      const std::size_t ci = static_cast<std::size_t>(nd.first_child + c);
+      const auto &ch = nodes[ci];
+      const std::uint32_t cc = ch.end - ch.begin;
+      if (cc <= gs) {
+        if (pack && have_pending && (pending.end - pending.begin) + cc <= gs) {
+          pending.end = ch.end;  // siblings are contiguous in tree order
+        } else {
+          flush();
+          pending = {ch.begin, ch.end};
+          have_pending = true;
+        }
       } else {
-        // Reverse, so groups come out in tree order.
-        for (int c = nd.n_children - 1; c >= 0; --c) stack.push_back(nd.first_child + c);
+        flush();
+        visit(ci);
       }
     }
-  }
-
-  if (pack && !specs.empty()) {
-    std::vector<GroupSpec> packed{specs[0]};
-    for (std::size_t k = 1; k < specs.size(); ++k) {
-      GroupSpec &cur = packed.back();
-      if (specs[k].end - cur.begin <= static_cast<std::uint32_t>(group_size))
-        cur.end = specs[k].end;  // specs tile [0, n) in order, so this stays contiguous
-      else
-        packed.push_back(specs[k]);
-    }
-    specs.swap(packed);
-  }
+    flush();
+  };
+  visit(0);
 
   // Walk once per group.
   const double inv_theta = 1.0 / gp.theta;
@@ -158,6 +178,8 @@ void build_group_lists(const Octree &tree, const GravityParams &gp, int group_si
     out.cell_interactions += targets * work[g].cells.size();
     out.body_interactions += targets * work[g].bodies.size() - targets;  // each skips itself
     out.max_group = std::max<int>(out.max_group, static_cast<int>(targets));
+    out.max_list = std::max<std::uint64_t>(out.max_list,
+                                           work[g].cells.size() + work[g].bodies.size());
   }
 }
 

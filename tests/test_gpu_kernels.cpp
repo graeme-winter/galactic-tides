@@ -132,6 +132,41 @@ int check_lists(const Octree &tree, const GroupLists &L, std::size_t n, int grou
   return bad;
 }
 
+// Packing may only merge siblings: every group must be a whole node or a
+// run of consecutive children of the deepest node containing it. Returns the
+// number of groups that are not.
+int check_packing(const Octree &tree, const GroupLists &L) {
+  const auto &nodes = tree.nodes();
+  int bad = 0;
+  for (const auto &g : L.groups) {
+    // Deepest node whose range contains [g.begin, g.end).
+    std::size_t ni = 0;
+    for (bool descended = true; descended;) {
+      descended = false;
+      const auto &nd = nodes[ni];
+      for (int c = 0; c < nd.n_children; ++c) {
+        const auto &ch = nodes[nd.first_child + c];
+        if (ch.begin <= g.begin && g.end <= ch.end) {
+          ni = nd.first_child + c;
+          descended = true;
+          break;
+        }
+      }
+    }
+    const auto &nd = nodes[ni];
+    if (nd.begin == g.begin && nd.end == g.end) continue;
+    if (nd.is_leaf()) continue;  // a chunk of an oversized leaf
+    bool starts = false, ends = false;
+    for (int c = 0; c < nd.n_children; ++c) {
+      const auto &ch = nodes[nd.first_child + c];
+      starts = starts || ch.begin == g.begin;
+      ends = ends || ch.end == g.end;
+    }
+    bad += !(starts && ends);
+  }
+  return bad;
+}
+
 std::vector<double> sorted_errors(const Particles &a, const Particles &ref) {
   std::vector<double> e;
   for (std::size_t i = 0; i < a.size(); ++i) e.push_back(norm(a.acc[i] - ref.acc[i]) / norm(ref.acc[i]));
@@ -224,7 +259,11 @@ int main() {
     GravityParams g2 = gp;
     g2.theta = 0.7;
     build_group_lists(tree, g2, gs, L, pack);
-    const int bad = check_lists(tree, L, n, gs);
+    const int bad = check_lists(tree, L, n, gs) + check_packing(tree, L);
+    // No group's list may dwarf the rest: on a GPU the longest list is walked
+    // serially by one SIMD group and sets the kernel's time.
+    const double mean_list = double(L.cell_interactions + L.body_interactions) / n;
+    CHECK(double(L.max_list) < 3.0 * mean_list + 64);
     std::cout << (pack ? "packed " : "") << "group_size " << gs << ": " << L.groups.size()
               << " groups, largest "
               << L.max_group << ", interactions/particle "

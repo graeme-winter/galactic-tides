@@ -170,10 +170,14 @@ int main(int argc, char **argv) {
           std::printf(" (gpu %.1f, %s kernel%s)", tm.gpu * 1e3, tm.kernel,
                       tm.zero_copy ? ", zero-copy" : ", copied");
           const auto &L = group->lists();
+          const double mean_list =
+              double(L.cell_interactions + L.body_interactions) / double(p.size());
           std::printf("\n%-14s groups %zu, threads/threadgroup %d, mean fill %.1f, cells %.0f + "
-                      "bodies %.0f per target, %.2e interactions/s on the GPU",
+                      "bodies %.0f per target, longest list %llu (%.1fx mean), %.2e "
+                      "interactions/s on the GPU",
                       "", L.groups.size(), L.max_group, double(p.size()) / L.groups.size(),
                       double(L.cell_interactions) / p.size(), double(L.body_interactions) / p.size(),
+                      (unsigned long long)L.max_list, double(L.max_list) / mean_list,
                       double(L.cell_interactions + L.body_interactions) / std::max(tm.gpu, 1e-9));
         }
       }
