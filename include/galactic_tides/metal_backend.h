@@ -22,6 +22,12 @@ extern const char *const kKernelSource;
 // True if built with Metal support (does not check for a device).
 bool compiled_in();
 
+// Record everything the default GPU does between these calls into a
+// .gputrace document that Xcode opens with per-kernel performance counters
+// (occupancy, limiters). Outside Xcode, run with MTL_CAPTURE_ENABLED=1.
+void start_gpu_capture(const std::string &path);
+void stop_gpu_capture();
+
 class Context {
  public:
   Context();  // throws if Metal is unavailable or the kernels fail to compile

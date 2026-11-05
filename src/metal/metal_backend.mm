@@ -46,6 +46,31 @@ struct Binding {
 
 }  // namespace
 
+void start_gpu_capture(const std::string &path) {
+  std::string error;
+  @autoreleasepool {
+    MTLCaptureManager *manager = [MTLCaptureManager sharedCaptureManager];
+    if (![manager supportsDestination:MTLCaptureDestinationGPUTraceDocument]) {
+      error = "GPU capture to a file is not enabled: run with MTL_CAPTURE_ENABLED=1";
+    } else {
+      MTLCaptureDescriptor *descriptor = [[MTLCaptureDescriptor alloc] init];
+      descriptor.captureObject = MTLCreateSystemDefaultDevice();
+      descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
+      descriptor.outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+      NSError *err = nil;
+      if (![manager startCaptureWithDescriptor:descriptor error:&err])
+        error = "GPU capture failed to start: " + describe(err);
+    }
+  }
+  if (!error.empty()) throw std::runtime_error(error);
+}
+
+void stop_gpu_capture() {
+  @autoreleasepool {
+    [[MTLCaptureManager sharedCaptureManager] stopCapture];
+  }
+}
+
 struct Context::Impl {
   id<MTLDevice> device = nil;
   id<MTLCommandQueue> queue = nil;

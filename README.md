@@ -74,7 +74,16 @@ nothing is copied between the CPU and the GPU.
 `galactic-tides-bench n=200000` times the solvers on a Hernquist galaxy and
 checks them against double precision direct summation on a sample. For the
 GPU tree it also reports the time on the GPU itself (from the command
-buffer) and whether the arrays were used in place.
+buffer), whether the arrays were used in place, the group fill and the GPU's
+interaction rate. `quadrupole=0` and `group_size=` help tell arithmetic
+limits from occupancy, and
+
+```sh
+MTL_CAPTURE_ENABLED=1 ./galactic-tides-bench backends=group-metal repeat=1 gpu_trace=tree.gputrace
+```
+
+records one force evaluation for Xcode, which shows the kernel's occupancy
+and performance limiters.
 
 **Building with Metal.** On macOS, Metal is on by default
 (`-DGALACTIC_TIDES_USE_METAL=OFF` to disable). Kernels are compiled at run time

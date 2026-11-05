@@ -10,6 +10,11 @@ namespace metal {
 
 bool compiled_in() { return false; }
 
+void start_gpu_capture(const std::string &) {
+  throw std::runtime_error("GPU capture needs a build with Metal");
+}
+void stop_gpu_capture() {}
+
 struct Context::Impl {};
 
 Context::Context() {

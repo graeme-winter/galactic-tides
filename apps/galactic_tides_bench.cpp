@@ -1,7 +1,13 @@
 // Times and checks the gravity solvers on a Hernquist galaxy.
 //
-//   galactic-tides-bench [n=100000] [theta=0.6] [eps=0.05] [repeat=3] [sample=1000]
-//                   [group_size=32] [backends=tree-cpu,group-cpu,group-metal,direct-metal]
+//   galactic-tides-bench [n=100000] [theta=0.6] [eps=0.05] [quadrupole=1] [repeat=3]
+//                   [sample=1000] [group_size=32] [group_pack=default]
+//                   [backends=tree-cpu,group-cpu,group-metal,direct-metal]
+//                   [gpu_trace=bench.gputrace]
+//
+// gpu_trace records one extra group-metal force evaluation into a .gputrace
+// document for Xcode's GPU performance counters; run with
+// MTL_CAPTURE_ENABLED=1 when not launched from Xcode.
 //
 // Accuracy is measured against double precision direct summation for a
 // random sample of particles, so it stays affordable at large n.
@@ -55,6 +61,10 @@ int main(int argc, char **argv) {
     GravityParams gp;
     gp.theta = params.get_double("theta", 0.6);
     gp.eps = params.get_double("eps", 0.05);
+    gp.quadrupole = params.get_bool("quadrupole", true);
+    // -1: the device's default (packed on Metal, not on the CPU)
+    const int pack = params.has("group_pack") ? (params.get_bool("group_pack", true) ? 1 : 0) : -1;
+    const std::string gpu_trace = params.get_string("gpu_trace", "");
     std::string def = "tree-cpu,group-cpu";
     if (metal::compiled_in()) def += ",group-metal,direct-metal";
     const auto backends = split(params.get_string("backends", def));
@@ -100,8 +110,8 @@ int main(int argc, char **argv) {
         std::printf("Metal unavailable: %s\n", e.what());
       }
     }
-    std::printf("theta %g, eps %g, %d timed repeats after a warm-up\n\n", gp.theta, gp.eps,
-                repeat);
+    std::printf("theta %g, eps %g, quadrupole %s, %d timed repeats after a warm-up\n\n",
+                gp.theta, gp.eps, gp.quadrupole ? "on" : "off", repeat);
     std::printf("%-14s %10s %12s %12s %12s   %s\n", "backend", "ms/force", "inter/part",
                 "median err", "99% err", "breakdown (ms)");
 
@@ -112,7 +122,7 @@ int main(int argc, char **argv) {
         if (name == "tree-cpu") model_ptr = std::make_unique<TreeGravity>(gp);
         else if (name == "group-cpu" || name == "group-metal") {
           auto g = std::make_unique<GroupTreeGravity>(
-              gp, name == "group-cpu" ? Device::CPU : Device::Metal, group_size);
+              gp, name == "group-cpu" ? Device::CPU : Device::Metal, group_size, 8, pack);
           group = g.get();
           model_ptr = std::move(g);
         } else if (name == "direct-cpu") model_ptr = std::make_unique<DirectGravity>(gp, Device::CPU);
@@ -148,10 +158,23 @@ int main(int argc, char **argv) {
       if (group) {
         std::printf("   tree %.1f, lists %.1f, evaluate %.1f", tm.tree * 1e3, tm.lists * 1e3,
                     tm.evaluate * 1e3);
-        if (name == "group-metal")
+        if (name == "group-metal") {
           std::printf(" (gpu %.1f%s)", tm.gpu * 1e3, tm.zero_copy ? ", zero-copy" : ", copied");
+          const auto &L = group->lists();
+          std::printf("\n%-14s groups %zu, threads/threadgroup %d, mean fill %.1f, cells %.0f + "
+                      "bodies %.0f per target, %.2e interactions/s on the GPU",
+                      "", L.groups.size(), L.max_group, double(p.size()) / L.groups.size(),
+                      double(L.cell_interactions) / p.size(), double(L.body_interactions) / p.size(),
+                      double(L.cell_interactions + L.body_interactions) / std::max(tm.gpu, 1e-9));
+        }
       }
       std::printf("\n");
+      if (name == "group-metal" && !gpu_trace.empty()) {
+        metal::start_gpu_capture(gpu_trace);
+        model_ptr->compute(p);
+        metal::stop_gpu_capture();
+        std::printf("%-14s wrote %s (open in Xcode)\n", "", gpu_trace.c_str());
+      }
     }
   } catch (const std::exception &e) {
     std::cerr << "error: " << e.what() << "\n";
