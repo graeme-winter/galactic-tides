@@ -20,10 +20,55 @@ add_library(galactic_tides
   src/integrator.cpp
   src/snapshot_io.cpp
   src/hernquist_ics.cpp
+  src/gravity_backends.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/generated/kernel_source.cpp
 )
 target_include_directories(galactic_tides PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(galactic_tides PRIVATE
-  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>)
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-Wall -Wextra -Wpedantic>)
+
+# The Metal kernels are compiled at run time from source embedded in the
+# library: the shared arithmetic header followed by the kernel wrappers. This
+# is generated on every platform, so tests can check what would be compiled.
+set(GT_KERNEL_FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/galactic_tides/kernels/gravity_kernels.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/gravity_kernels.metal)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/include/galactic_tides/kernels/gravity_kernels.h GT_KERNEL_HEADER)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/gravity_kernels.metal GT_KERNEL_METAL)
+configure_file(src/metal/kernel_source.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/kernel_source.cpp @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GT_KERNEL_FILES}
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernel_source.cpp.in)
+
+# Metal: Apple only. Without it a stub keeps the API and reports clearly.
+if(APPLE)
+  option(GALACTIC_TIDES_USE_METAL "Build the Metal GPU gravity backends" ON)
+else()
+  set(GALACTIC_TIDES_USE_METAL OFF)
+endif()
+if(GALACTIC_TIDES_USE_METAL)
+  enable_language(OBJCXX)
+  target_sources(galactic_tides PRIVATE src/metal/metal_backend.mm)
+  set_source_files_properties(src/metal/metal_backend.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(galactic_tides PUBLIC "-framework Metal" "-framework Foundation")
+  target_compile_definitions(galactic_tides PUBLIC GALACTIC_TIDES_HAVE_METAL=1)
+  message(STATUS "Metal backends: on")
+
+  # Optional offline syntax check of the kernels (needs the Metal compiler,
+  # which comes with full Xcode rather than the command line tools).
+  execute_process(COMMAND xcrun -sdk macosx -find metal
+                  RESULT_VARIABLE GT_METAL_FOUND OUTPUT_QUIET ERROR_QUIET)
+  if(GT_METAL_FOUND EQUAL 0)
+    add_custom_target(metal_check
+      COMMAND xcrun -sdk macosx metal -c
+              -I ${CMAKE_CURRENT_SOURCE_DIR}/include/galactic_tides/kernels
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/gravity_kernels.metal
+              -o ${CMAKE_CURRENT_BINARY_DIR}/gravity_kernels.air
+      COMMENT "Compiling the Metal kernels offline"
+      VERBATIM)
+  endif()
+else()
+  target_sources(galactic_tides PRIVATE src/metal/metal_stub.cpp)
+endif()
 
 find_package(HDF5 REQUIRED COMPONENTS C)
 target_include_directories(galactic_tides PUBLIC ${HDF5_INCLUDE_DIRS})

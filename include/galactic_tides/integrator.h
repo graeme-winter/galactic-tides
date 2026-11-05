@@ -13,12 +13,15 @@ class ForceModel {
  public:
   virtual ~ForceModel() = default;
   virtual void compute(Particles &p) = 0;
+  // Interaction counts from the last compute(), for logging.
+  virtual WalkStats stats() const { return {}; }
 };
 
 class TreeGravity : public ForceModel {
  public:
   TreeGravity(const GravityParams &gp, int leaf_size = 8) : gp_(gp), leaf_size_(leaf_size) {}
   void compute(Particles &p) override { stats_ = compute_gravity_tree(p, gp_, tree_, leaf_size_); }
+  WalkStats stats() const override { return stats_; }
   const WalkStats &last_stats() const { return stats_; }
   const Octree &tree() const { return tree_; }
   const GravityParams &params() const { return gp_; }

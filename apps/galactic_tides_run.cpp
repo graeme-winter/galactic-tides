@@ -11,9 +11,11 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "galactic_tides/gravity_backends.h"
 #include "galactic_tides/integrator.h"
 #include "galactic_tides/params.h"
 #include "galactic_tides/snapshot_io.h"
@@ -38,13 +40,14 @@ int main(int argc, char **argv) {
     const double t_end = params.get_double("t_end", 10.0);
     const double snap_every = params.get_double("snapshot_interval", 1.0);
     const long log_every = params.get_int("log_interval", 10);
-    const int leaf_size = static_cast<int>(params.get_int("leaf_size", 8));
     GravityParams gp;
     gp.G = params.get_double("G", gp.G);
     gp.eps = params.get_double("eps", gp.eps);
     gp.theta = params.get_double("theta", gp.theta);
     gp.quadrupole = params.get_bool("quadrupole", gp.quadrupole);
     if (dt <= 0 || snap_every <= 0) throw std::runtime_error("dt and snapshot_interval must be > 0");
+    std::string gravity_summary;
+    std::unique_ptr<ForceModel> gravity = make_gravity(params, gp, &gravity_summary);
     for (const auto &k : params.unused())
       std::fprintf(stderr, "warning: parameter '%s' was not used\n", k.c_str());
 
@@ -55,11 +58,11 @@ int main(int argc, char **argv) {
     std::printf("read %zu particles from %s (t = %g):", p.size(), ics.c_str(), t);
     for (int k = 0; k < kNumParticleTypes; ++k)
       if (counts[k]) std::printf(" %s %zu", type_name(static_cast<ParticleType>(k)), counts[k]);
-    std::printf("\ntheta %g  eps %g  quadrupole %s  dt %g  t_end %g\n", gp.theta, gp.eps,
-                gp.quadrupole ? "yes" : "no", dt, t_end);
+    std::printf("\ngravity: %s\ntheta %g  eps %g  quadrupole %s  dt %g  t_end %g\n",
+                gravity_summary.c_str(), gp.theta, gp.eps, gp.quadrupole ? "yes" : "no", dt,
+                t_end);
 
-    TreeGravity gravity(gp, leaf_size);
-    LeapfrogKDK leapfrog(gravity);
+    LeapfrogKDK leapfrog(*gravity);
     leapfrog.prime(p);
     const Diagnostics d0 = compute_diagnostics(p, t);
 
@@ -82,7 +85,7 @@ int main(int argc, char **argv) {
                 "2K/|W|", "|P|", "Lz", "int/part", "s/step");
     auto log = [&](long step, double secs) {
       const Diagnostics d = compute_diagnostics(p, t);
-      const auto &s = gravity.last_stats();
+      const WalkStats s = gravity->stats();
       std::printf("%8ld %10.4f %14.7e %11.3e %8.4f %11.3e %11.4e %9.0f %8.3f\n", step, t,
                   d.total(), d.total() / d0.total() - 1, d.virial_ratio(), norm(d.momentum),
                   d.angular_momentum.z,
